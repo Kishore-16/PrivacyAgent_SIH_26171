@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PrivacyAgent Mock Application — SIH 26171</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Main Application Form -->
+    <main class="card">
+      <div class="card-header">
+        <div>
+          <span class="badge">SIH Problem Statement 26171</span>
+          <h1>Mock Financial Portal</h1>
+          <p class="subtitle">Demonstration Application for On-Device Visual & DOM Privacy Firewall</p>
+        </div>
+      </div>
+
+      <div class="profile-section">
+        <!-- SVG Avatar placeholder -->
+        <svg class="avatar" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="50" cy="50" r="50" fill="#312e81"/>
+          <circle cx="50" cy="36" r="18" fill="#a5b4fc"/>
+          <path d="M 20 85 C 20 62 80 62 80 85 Z" fill="#a5b4fc"/>
+        </svg>
+        <div class="avatar-info">
+          <h4>Profile Verification</h4>
+          <p>Local visual analysis blurs user profile photos prior to processing</p>
+        </div>
+      </div>
+
+      <form id="banking-form" onsubmit="return false;">
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="full-name">Full Name</label>
+            <input type="text" id="full-name" name="name" value="Rahul Kumar" placeholder="Enter name">
+          </div>
+
+          <div class="form-group">
+            <label for="email">Email Address</label>
+            <input type="email" id="email" name="email" value="rahul.kumar@example.com" placeholder="someone@example.com">
+          </div>
+
+          <div class="form-group">
+            <label for="phone">Phone Number</label>
+            <input type="tel" id="phone" name="phone" value="9876543210" placeholder="+91 9876543210">
+          </div>
+
+          <div class="form-group">
+            <label for="pan">PAN Card Number</label>
+            <input type="text" id="pan" name="pan" value="ABCDE1234F" placeholder="ABCDE1234F">
+          </div>
+
+          <div class="form-group">
+            <label for="account">Account Number</label>
+            <input type="text" id="account" name="account" value="1234-5678-9012" placeholder="1234-5678-9012">
+          </div>
+
+          <div class="form-group">
+            <label for="password">Password / Secret</label>
+            <input type="password" id="password" name="password" value="demo-secret-pass" placeholder="••••••••">
+          </div>
+
+          <div class="form-group full-width checkbox-group">
+            <input type="checkbox" id="terms" checked>
+            <label for="terms">I accept the terms and acknowledge local privacy verification</label>
+          </div>
+        </div>
+
+        <button type="submit" id="submit-btn" class="submit-btn">SUBMIT APPLICATION</button>
+      </form>
+    </main>
+
+    <!-- Developer Server-Blindness Demo Panel -->
+    <aside class="panel-card">
+      <div class="panel-header">
+        <h3>Server-Blindness Inspector</h3>
+        <span class="status-pill"><span class="status-dot"></span> LOCAL ONLY</span>
+      </div>
+      <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">
+        Real-time view of sanitized payload sent to local planner/AI engine:
+      </p>
+
+      <div id="inspector-payload" class="inspector-box">FORM CONTEXT SANITIZED:
+Name: [PERSON]
+Email: [EMAIL]
+Phone: [PHONE]
+PAN: [PAN]
+Account: [ACCOUNT]
+Password: [PASSWORD]
+State: READY_FOR_SUBMISSION</div>
+
+      <div class="metric-row">
+        <span>RAW PII TRANSMITTED</span>
+        <span class="metric-val" id="raw-pii-val">0 BYTES</span>
+      </div>
+
+      <div class="metric-row">
+        <span>DOM PRIVACY FILTER</span>
+        <span class="metric-val">ACTIVE (100%)</span>
+      </div>
+
+      <div class="metric-row">
+        <span>ACTION ALLOW-LIST</span>
+        <span class="metric-val">STRICT</span>
+      </div>
+    </aside>
+  </div>
+
+  <script src="demo.js"></script>
+</body>
+</html>

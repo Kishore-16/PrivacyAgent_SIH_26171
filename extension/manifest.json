@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "PrivacyAgent — On-Device Privacy Firewall",
+  "version": "2.0.0",
+  "description": "SIH 26171: On-device Visual Perception & DOM Privacy Firewall for Lightweight Browser Agents",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*"
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "PrivacyAgent"
+  },
+  "background": {
+    "service_worker": "background/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "privacy/patterns.js",
+        "privacy/detector.js",
+        "privacy/redactor.js",
+        "privacy/firewall.js",
+        "actions/validator.js",
+        "actions/executor.js",
+        "content/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

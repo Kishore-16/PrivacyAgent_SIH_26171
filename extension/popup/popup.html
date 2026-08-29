@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PrivacyAgent Dashboard</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <svg class="shield-icon" viewBox="0 0 24 24">
+        <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-5.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8Standardz"/>
+      </svg>
+      <div>
+        <h1>PrivacyAgent</h1>
+        <div class="tagline">Your Screen Never Leaves Your Browser Unprotected</div>
+      </div>
+    </div>
+    <div class="status-pill">
+      <span class="status-dot"></span>
+      <span id="firewall-status">ACTIVE</span>
+    </div>
+  </header>
+
+  <!-- Metrics Grid -->
+  <section class="metrics-grid">
+    <div class="metric-card">
+      <val id="m-scanned">0</val>
+      <label>Scanned</label>
+    </div>
+    <div class="metric-card">
+      <val id="m-sensitive">0</val>
+      <label>Sensitive</label>
+    </div>
+    <div class="metric-card">
+      <val id="m-redactions">0</val>
+      <label>Redactions</label>
+    </div>
+  </section>
+
+  <!-- Status Info Panel -->
+  <section class="info-panel">
+    <div class="info-row">
+      <span>Local Vision Service</span>
+      <strong id="st-vision">CHECKING...</strong>
+    </div>
+    <div class="info-row">
+      <span>Server Endpoint</span>
+      <strong id="st-server">127.0.0.1:8000</strong>
+    </div>
+    <div class="info-row">
+      <span>Raw PII Transmitted</span>
+      <strong style="color: #10b981;">0 BYTES</strong>
+    </div>
+    <div class="info-row">
+      <span>Local Processing Latency</span>
+      <strong id="st-latency">— ms</strong>
+    </div>
+    <div class="info-row">
+      <span>Current Hostname</span>
+      <strong id="st-host">—</strong>
+    </div>
+  </section>
+
+  <!-- Action Buttons -->
+  <section class="action-buttons">
+    <button id="btn-scan" class="btn-action">
+      <span>1. Scan Page & Detect PII</span>
+      <small>→</small>
+    </button>
+    <button id="btn-preview" class="btn-action btn-secondary">
+      <span>2. Show Sanitized View</span>
+      <small>👁</small>
+    </button>
+    <button id="btn-plan" class="btn-action btn-secondary">
+      <span>3. Get Safe Agent Action</span>
+      <small>⚡</small>
+    </button>
+  </section>
+
+  <!-- Decision Output Box -->
+  <section class="decision-box">
+    <div class="decision-title">Agent Decision Output</div>
+    <pre id="decision-out" class="decision-output">Click "1. Scan Page & Detect PII" to initialize protection.</pre>
+  </section>
+
+  <!-- Preview Container (Hidden by default) -->
+  <section id="preview-section" class="preview-container" style="display: none;">
+    <div class="preview-split">
+      <div class="preview-col">
+        <h4>Sanitized Visual Image</h4>
+        <img id="sanitized-img" class="sanitized-img" alt="Sanitized Preview">
+      </div>
+      <div class="preview-col">
+        <h4>Sanitized DOM Snippet</h4>
+        <pre id="dom-preview" style="font-size:0.6rem; max-height:100px; overflow:auto; color:#94a3b8;"></pre>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span id="footer-status">Ready</span>
+    <span id="external-ai-status">External AI: NOT CONFIGURED (Local Only)</span>
+  </footer>
+
+  <!-- Confirmation Modal Dialog for High-Risk Actions -->
+  <div id="confirm-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-card">
+      <h3>⚠️ High-Risk Action Confirmation</h3>
+      <p id="confirm-msg">PrivacyAgent wants to click "Submit Application". Proceed?</p>
+      <div class="modal-btns">
+        <button id="btn-confirm-yes" class="btn-confirm">ALLOW ONCE</button>
+        <button id="btn-confirm-no" class="btn-cancel">BLOCK</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
