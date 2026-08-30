@@ -6,7 +6,50 @@ document.addEventListener('DOMContentLoaded', () => {
     return tabs[0];
   }
 
-  function sendTabMessage(tab, msg) {
+  // Programmatically inject content scripts if they aren't already loaded.
+  // This fixes the "receiving end does not exist" error for tabs that were
+  // open before the extension was installed or reloaded.
+  async function ensureContentScripts(tab) {
+    if (!tab || !tab.id) return;
+
+    // Skip chrome:// and other restricted pages
+    const url = tab.url || '';
+    if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') ||
+        url.startsWith('edge://') || url.startsWith('about:') || url === '') {
+      throw new Error('Cannot scan browser internal pages. Please navigate to a website first.');
+    }
+
+    try {
+      // Try a quick ping to see if content scripts are already loaded
+      await new Promise((resolve, reject) => {
+        chrome.tabs.sendMessage(tab.id, { type: 'PING' }, response => {
+          if (chrome.runtime.lastError) {
+            reject(chrome.runtime.lastError);
+          } else {
+            resolve(response);
+          }
+        });
+      });
+    } catch (e) {
+      // Content scripts not loaded — inject them now
+      console.log('Content scripts not found, injecting into tab', tab.id);
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: [
+          'privacy/patterns.js',
+          'privacy/detector.js',
+          'privacy/redactor.js',
+          'privacy/firewall.js',
+          'actions/validator.js',
+          'actions/executor.js',
+          'content/content.js'
+        ]
+      });
+    }
+  }
+
+  async function sendTabMessage(tab, msg) {
+    await ensureContentScripts(tab);
     return new Promise((resolve, reject) => {
       chrome.tabs.sendMessage(tab.id, msg, response => {
         if (chrome.runtime.lastError) {
@@ -24,6 +67,45 @@ document.addEventListener('DOMContentLoaded', () => {
         resolve(response || { ok: false, error: chrome.runtime.lastError?.message || 'No response from service worker' });
       });
     });
+  }
+
+  async function createSanitizedScreenshot(tab) {
+    const mask = await sendTabMessage(tab, { type: 'VISUAL_REDACTION_REGIONS' });
+    const rawImage = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    const image = new Image();
+    image.src = rawImage;
+    await image.decode();
+
+    const canvas = document.createElement('canvas');
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext('2d');
+    context.drawImage(image, 0, 0);
+    // captureVisibleTab dimensions can differ at browser zoom, so derive scale
+    // from the captured bitmap instead of assuming devicePixelRatio.
+    const scaleX = image.naturalWidth / mask.viewportWidth;
+    const scaleY = image.naturalHeight / mask.viewportHeight;
+    
+    for (const region of mask.regions || []) {
+      const paddingX = 3 * scaleX;
+      const paddingY = 3 * scaleY;
+      const rx = Math.max(0, region.left * scaleX - paddingX);
+      const ry = Math.max(0, region.top * scaleY - paddingY);
+      const rw = region.width * scaleX + paddingX * 2;
+      const rh = region.height * scaleY + paddingY * 2;
+      
+      // Draw semantic box
+      context.fillStyle = 'rgb(240, 240, 245)';
+      context.fillRect(rx, ry, rw, rh);
+      context.strokeStyle = 'rgb(124, 58, 237)';
+      context.lineWidth = 2 * scaleX;
+      context.strokeRect(rx, ry, rw, rh);
+      
+      context.fillStyle = 'rgb(124, 58, 237)';
+      context.font = `bold ${14 * scaleX}px sans-serif`;
+      context.fillText(region.kind ? `[${region.kind.toUpperCase()}]` : '[REDACTED]', rx + 4 * scaleX, ry + 16 * scaleY);
+    }
+    return { image: canvas.toDataURL('image/png'), redactedRegions: (mask.regions || []).length };
   }
 
   async function checkHealth() {
@@ -63,8 +145,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const tab = await getActiveTab();
     await runScan();
 
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-    const visionRes = await sendBgMessage({ type: 'VISION_ANALYZE', image: dataUrl });
+    // The raw capture remains in extension memory only.  Only the canvas copy
+    // with local DOM/image redactions is eligible for server transmission.
+    const sanitized = await createSanitizedScreenshot(tab);
+    const visionRes = await sendBgMessage({
+      type: 'VISION_ANALYZE',
+      image: sanitized.image,
+      mode: 'SEMANTIC',
+      sanitized: true,
+      redactedRegions: sanitized.redactedRegions
+    });
 
     const totalLatency = Math.round(performance.now() - startTime);
     $('#st-latency').textContent = `${visionRes.latency_ms || totalLatency} ms`;

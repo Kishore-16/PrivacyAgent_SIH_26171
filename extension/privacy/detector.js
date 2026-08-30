@@ -57,7 +57,9 @@ class DOMPrivacyDetector {
         findings.push({
           kind,
           selector: this.getSelector(el),
-          value: el.value || '',
+          // Findings are included in planner context.  Never retain the raw
+          // form value there: the kind is sufficient for redaction/auditing.
+          value: `[${kind}]`,
           source: 'DOM'
         });
       }

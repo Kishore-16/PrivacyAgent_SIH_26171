@@ -64,14 +64,78 @@
     };
   }
 
+  function visibleRect(rect) {
+    const left = Math.max(0, rect.left);
+    const top = Math.max(0, rect.top);
+    const right = Math.min(window.innerWidth, rect.right);
+    const bottom = Math.min(window.innerHeight, rect.bottom);
+    if (right <= left || bottom <= top) return null;
+    return { left, top, width: right - left, height: bottom - top };
+  }
+
+  function getVisualRedactionRegions() {
+    const regions = [];
+    const addRect = (rect, kind) => {
+      const visible = visibleRect(rect);
+      if (visible) {
+        visible.kind = kind;
+        regions.push(visible);
+      }
+    };
+
+    // Only mask form controls that contain sensitive data
+    document.querySelectorAll('input, textarea, select, [contenteditable="true"]').forEach(el => {
+      const kind = DOMPrivacyDetector.isSensitiveElement(el);
+      if (kind) {
+        addRect(el.getBoundingClientRect(), kind);
+      }
+    });
+
+    // Add exact visible ranges for pattern-detected PII rendered as page text.
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    const patterns = [
+      ['EMAIL', PrivacyPatterns.EMAIL],
+      ['PHONE', PrivacyPatterns.PHONE],
+      ['PAN', PrivacyPatterns.PAN],
+      ['AADHAAR', PrivacyPatterns.AADHAAR],
+      ['CARD', PrivacyPatterns.CARD]
+    ];
+    
+    while ((node = walker.nextNode()) && regions.length < 500) {
+      const text = node.nodeValue || '';
+      for (const [kind, pattern] of patterns) {
+        pattern.lastIndex = 0;
+        let match;
+        while ((match = pattern.exec(text)) && regions.length < 500) {
+          const range = document.createRange();
+          range.setStart(node, match.index);
+          range.setEnd(node, match.index + match[0].length);
+          addRect(range.getBoundingClientRect(), kind);
+          if (!pattern.global) break;
+        }
+      }
+    }
+
+    return {
+      regions,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight
+    };
+  }
+
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     try {
-      if (msg.type === 'SCAN') {
+      if (msg.type === 'PING') {
+        sendResponse({ ok: true });
+      } else if (msg.type === 'SCAN') {
         sendResponse(performScan());
       } else if (msg.type === 'SNAPSHOT') {
         sendResponse(RedactionEngine.createSanitizedSnapshot());
       } else if (msg.type === 'DOM_CONTEXT') {
         sendResponse(getSanitizedContext());
+      } else if (msg.type === 'VISUAL_REDACTION_REGIONS') {
+        sendResponse(getVisualRedactionRegions());
       } else if (msg.type === 'EXECUTE_ACTION') {
         const res = ActionExecutor.execute(msg.action);
         addAuditRecord('EXECUTE_ACTION', { action: msg.action?.type || 'UNKNOWN' });

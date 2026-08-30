@@ -26,5 +26,13 @@ class TestServerAPI(unittest.TestCase):
         data = response.json()
         self.assertTrue(data.get("ok"))
 
+    def test_plan_endpoint_rejects_nested_raw_pii(self):
+        response = self.client.post("/plan", json={"context": {"nested": {"email": "user@domain.com"}}})
+        self.assertEqual(response.status_code, 400)
+
+    def test_vision_endpoint_requires_client_redaction_attestation(self):
+        response = self.client.post("/vision/analyze", json={"image": "not-an-image", "sanitized": False})
+        self.assertEqual(response.status_code, 400)
+
 if __name__ == '__main__':
     unittest.main()

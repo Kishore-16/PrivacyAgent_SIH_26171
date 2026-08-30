@@ -35,7 +35,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'VISION_ANALYZE') {
       return await fetchLocalServer('/vision/analyze', {
         method: 'POST',
-        body: JSON.stringify({ image: msg.image, redaction_mode: msg.mode || 'BLUR' })
+        body: JSON.stringify({
+          image: msg.image,
+          redaction_mode: msg.mode || 'BLUR',
+          sanitized: msg.sanitized === true,
+          redacted_regions: Number.isInteger(msg.redactedRegions) ? msg.redactedRegions : 0
+        })
       });
     }
 

@@ -24,7 +24,7 @@ cd /d "%~dp0"
 if not exist ".venv" (
     echo Creating virtual environment (.venv)...
     python -m venv .venv
-    if %errorlevel% neq 0 (
+    if !errorlevel! neq 0 (
         echo [ERROR] Failed to create virtual environment.
         pause
         exit /b 1

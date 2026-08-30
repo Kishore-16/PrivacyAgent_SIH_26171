@@ -20,7 +20,7 @@ class RedactionEngine {
     return out;
   }
 
-  static createSanitizedSnapshot(mode = 'SEMANTIC', conservativeMode = true) {
+  static createSanitizedSnapshot(mode = 'SEMANTIC', conservativeMode = false) {
     const scanResult = DOMPrivacyDetector.scanPage();
     const clone = document.documentElement.cloneNode(true);
 

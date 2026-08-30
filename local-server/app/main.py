@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any
 
 from app.vision import analyze_and_redact_screenshot
 from app.planner import plan_action
-from app.firewall import sanitize_text, contains_raw_pii, log_safe_audit
+from app.firewall import contains_unsafe_payload, log_safe_audit
 
 app = FastAPI(
     title="PrivacyAgent Local Vision Server",
@@ -29,6 +29,8 @@ app.add_middleware(
 class VisionRequest(BaseModel):
     image: str
     redaction_mode: Optional[str] = "BLUR"
+    sanitized: bool = False
+    redacted_regions: int = 0
 
 class PlanRequest(BaseModel):
     context: Dict[str, Any]
@@ -47,6 +49,8 @@ def get_health():
 def vision_analyze(req: VisionRequest):
     if not req.image:
         raise HTTPException(status_code=400, detail="Missing image data")
+    if not req.sanitized:
+        raise HTTPException(status_code=400, detail="Vision input rejected: client-side redaction attestation is required")
     
     result = analyze_and_redact_screenshot(req.image, redaction_mode=req.redaction_mode)
     log_safe_audit("VISION_ANALYZE", {
@@ -60,12 +64,10 @@ def vision_analyze(req: VisionRequest):
 @app.post("/plan")
 def planner_endpoint(req: PlanRequest):
     context = req.context or {}
-    # Verify no raw PII in text payload
-    title = sanitize_text(context.get("title", ""))
-    url = sanitize_text(context.get("url", ""))
-    
-    context["title"] = title
-    context["url"] = url
+    # The server is a verification boundary, not a second chance to silently
+    # sanitize raw data that has already crossed the extension boundary.
+    if contains_unsafe_payload(context):
+        raise HTTPException(status_code=400, detail="Planner input rejected: raw sensitive data detected")
 
     res = plan_action(context)
     log_safe_audit("PLAN_ACTION", {

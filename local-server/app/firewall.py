@@ -1,4 +1,5 @@
 import re
+from typing import Any
 import logging
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -31,6 +32,25 @@ def contains_raw_pii(text: str) -> bool:
         AADHAAR_RE.search(text),
         CARD_RE.search(text)
     ])
+
+SENSITIVE_KEY_RE = re.compile(r'password|passcode|otp|secret|token', re.I)
+
+def contains_unsafe_payload(value: Any, key: str = '') -> bool:
+    """Reject raw PII anywhere in a nested planner payload.
+
+    Sanitized placeholders (for example ``[PASSWORD]``) are permitted for
+    audit/counting; real values under sensitive keys are not.
+    """
+    if isinstance(value, dict):
+        return any(contains_unsafe_payload(item, str(name)) for name, item in value.items())
+    if isinstance(value, list):
+        return any(contains_unsafe_payload(item, key) for item in value)
+    if isinstance(value, str):
+        if contains_raw_pii(value):
+            return True
+        if SENSITIVE_KEY_RE.search(key) and not re.fullmatch(r'\[[A-Z_]+\]', value):
+            return True
+    return False
 
 def log_safe_audit(event_type: str, details: dict):
     # Log audit events WITHOUT recording any actual PII values
