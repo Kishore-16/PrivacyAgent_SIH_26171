@@ -172,41 +172,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-  const btnFlorence = $('#btn-florence-layer2');
-  if (btnFlorence) {
-    btnFlorence.onclick = async () => {
-      try {
-        $('#decision-out').textContent = 'Initializing Layer-2 Vision Shield (onnx-community/Florence-2-base)...';
-        const tab = await getActiveTab();
-        if (!tab) return;
-
-        const rawImage = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-        const resp = await fetch('http://127.0.0.1:8000/florence/analyze-layer2', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            image: rawImage,
-            redaction_mode: 'BLUR',
-            client_attestation: true
-          })
-        });
-
-        if (!resp.ok) throw new Error('Florence-2 endpoint returned error');
-        const fRes = await resp.json();
-
-        $('#preview-section').style.display = 'block';
-        if (fRes.sanitized_image && $('#sanitized-img')) {
-          $('#sanitized-img').src = fRes.sanitized_image;
-        }
-
-        $('#decision-out').textContent = `🛡️ LAYER-2 FLORENCE-2 VISION SHIELD ACTIVE:\nModel: ${fRes.model_id}\nNon-DOM Canvas/Image Redactions: ${fRes.redactions} region(s) covered with PrivacyAgent placeholders.\nLatency: ${fRes.latency_ms} ms`;
-      } catch (err) {
-        $('#decision-out').textContent = `Layer-2 Vision Shield Error: ${err.message}`;
-      }
-    };
-  }
-
-
   $('#btn-preview').onclick = async () => {
     try {
       const tab = await getActiveTab();
@@ -220,6 +185,21 @@ document.addEventListener('DOMContentLoaded', () => {
       if (snapshot?.html) {
         $('#dom-preview').textContent = snapshot.html.replace(/></g, '>\n<').slice(0, 1000) + '...';
       }
+
+      // Preview is also the hand-off point for the next-safe-step workflow.
+      // Generate a recommendation from the same sanitized DOM/image pair,
+      // but never execute it from a preview action.
+      const domContext = await sendTabMessage(tab, { type: 'DOM_CONTEXT' });
+      const nextStep = await sendBgMessage({
+        type: 'PLAN',
+        context: domContext.payload,
+        image: sanitized.image,
+        task: 'Analyze the page and determine the next safe action'
+      });
+      if (nextStep?.ok && nextStep.action) {
+        const action = nextStep.action;
+        $('#decision-out').textContent = `Sanitized view ready.\nNext safe action: ${action.type} — ${action.label || 'No label'}\nRisk: ${(action.risk || 'low').toUpperCase()}\nReason: ${action.reason || 'Local safety planner recommendation'}`;
+      }
     } catch (err) {
       $('#decision-out').textContent = `Preview Error: ${err.message}`;
     }
@@ -229,12 +209,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $('#btn-plan').onclick = async () => {
     try {
+      $('#decision-out').textContent = 'Generating sanitized screenshot and fetching DOM context...';
       const tab = await getActiveTab();
+      
+      // Ensure we have a sanitized screenshot for the AI
+      const sanitized = await createSanitizedScreenshot(tab);
       const domContext = await sendTabMessage(tab, { type: 'DOM_CONTEXT' });
       
+      const userTask = prompt("What is your task for this page? (Leave blank for generic analysis)", "Analyze the page and determine the next safe action");
+      
+      $('#decision-out').textContent = 'Requesting safe action from AI planner...';
       const planRes = await sendBgMessage({
         type: 'PLAN',
-        context: domContext.payload
+        context: domContext.payload,
+        image: sanitized.image,
+        task: userTask || 'Analyze the page and determine the next safe action'
       });
 
       if (!planRes.ok) {
@@ -669,7 +658,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function startPopupAgentTask(goalText) {
-    popupGoal = goalText;
+    popupGoal = RedactionEngine.sanitizeText(goalText);
     popupStepCount = 1;
     appendPopupMsg('user', goalText);
 
@@ -678,7 +667,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const resp = await fetch(`${SERVER_AGENT_BASE}/task/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task: goalText, url: activeTab?.url })
+        body: JSON.stringify({ task: popupGoal, url: RedactionEngine.sanitizeText(activeTab?.url || '') })
       });
       const data = await resp.json();
       if (!data.ok) throw new Error(data.detail || 'Failed to start agent task');
@@ -695,68 +684,48 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!popupTaskId) return;
 
     const activeTab = await getActiveTab();
+    if (!activeTab?.id) {
+      appendPopupMsg('system', '⚠️ No active browser tab is available for the next safe step.');
+      popupTaskId = null;
+      return;
+    }
     let domNodes = [];
+    let domRes = null;
     try {
-      const domRes = await sendTabMessage(activeTab, { type: 'AGENT_GET_DOM' });
+      domRes = await sendTabMessage(activeTab, { type: 'AGENT_GET_DOM' });
       domNodes = domRes?.nodes || [];
     } catch (e) {
       console.warn('Fallback DOM fetch', e);
     }
 
-    // Auto-detect missing file input element on active webpage tab
-    const fileInputNode = (domNodes || []).find(n => n.tag === 'input' && n.type === 'file');
-    if (fileInputNode) {
-      const docName = fileInputNode.text || fileInputNode.placeholder || 'Income Certificate';
-      appendPopupMsg('system', `📄 Sahayak Assistant activated for '${docName}'.`);
-      openSahayakPopup(docName, fileInputNode.selector);
+    // Auto-detect if user wants to upload a document
+    const isUploadIntent = popupGoal.toLowerCase().includes('upload') || popupGoal.toLowerCase().includes('certificate') || popupGoal.toLowerCase().includes('document');
+    if (isUploadIntent) {
+      const fileInputNode = (domNodes || []).find(n => n.tag === 'input' && n.type === 'file');
+      if (fileInputNode) {
+        const docName = fileInputNode.text || fileInputNode.placeholder || 'Income Certificate';
+        appendPopupMsg('system', `📄 Sahayak Assistant activated for '${docName}'.`);
+        openSahayakPopup(docName, fileInputNode.selector);
 
-      // Trigger webpage popup overlay as well
-      try {
-        await sendTabMessage(activeTab, { type: 'SAHAYAK_TRIGGER' });
-      } catch (e) {}
+        // Trigger webpage popup overlay as well
+        try {
+          await sendTabMessage(activeTab, { type: 'SAHAYAK_TRIGGER' });
+        } catch (e) {}
 
-      return;
-    }
-
-
-    // --- 2-STAGE SEQUENTIAL PRIVACY PIPELINE ---
-    // Stage 1: Client DOM & PII Redaction
-    // Stage 2: Florence-2 Vision Layer-2 Shield for non-DOM canvas text & human faces
-    let finalDualSanitizedImage = null;
-    try {
-      const stage1Result = await createSanitizedScreenshot(activeTab);
-      if (stage1Result?.image) {
-        const stage2Resp = await fetch('http://127.0.0.1:8000/florence/analyze-layer2', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            image: stage1Result.image,
-            redaction_mode: 'BLUR',
-            client_attestation: true
-          })
-        });
-        if (stage2Resp.ok) {
-          const stage2Data = await stage2Resp.json();
-          finalDualSanitizedImage = stage2Data.sanitized_image || stage1Result.image;
-        } else {
-          finalDualSanitizedImage = stage1Result.image;
-        }
+        return;
       }
-    } catch (pipelineErr) {
-      console.warn('[2-Stage Pipeline] Fallback to Stage 1 screenshot:', pipelineErr);
     }
+
 
     const payload = {
       task_id: popupTaskId,
       goal: popupGoal,
       step_number: popupStepCount,
       dom_nodes: domNodes,
-      sanitized_findings: [],
-      sanitized_image: finalDualSanitizedImage,
-      url: activeTab?.url,
-      title: activeTab?.title,
-      client_attested: true,
-      stage2_attested: true
+      sanitized_findings: domRes?.sanitized_findings || [],
+      url: RedactionEngine.sanitizeText(activeTab?.url || ''),
+      title: RedactionEngine.sanitizeText(activeTab?.title || ''),
+      client_attested: true
     };
 
     try {
@@ -766,14 +735,20 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify(payload)
       });
 
-
       if (!resp.ok) {
         const errJson = await resp.json();
         throw new Error(errJson.detail || 'Step rejected');
       }
 
       const stepRes = await resp.json();
-      appendPopupStepCard(stepRes.thought, stepRes.action.label || stepRes.action.type, stepRes.action.risk);
+      
+      // For chat answers, skip the step card — display directly as a message
+      if (stepRes.action?.label === 'Chat Answer') {
+        await executeStepAndAdvance(activeTab.id, stepRes);
+        return;
+      }
+
+      appendPopupStepCard(stepRes.thought || 'Next safe step', stepRes.action?.label || stepRes.action?.type || 'NO_ACTION', stepRes.action?.risk || 'low');
 
       if (stepRes.requires_hitl) {
         popupPendingStep = { stepRes, tabId: activeTab.id };
@@ -790,22 +765,39 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function executeStepAndAdvance(tabId, stepRes) {
-    if (stepRes.completed || stepRes.action.type === 'COMPLETE') {
+    if (!stepRes?.action) {
+      appendPopupMsg('system', '⚠️ The local planner returned no executable action.');
+      popupTaskId = null;
+      return;
+    }
+
+    // Chat answer — display cleanly as a message, not a step card
+    if (stepRes.action?.label === 'Chat Answer' && (stepRes.completed || stepRes.action?.type === 'COMPLETE')) {
+      appendPopupMsg('system', stepRes.status_summary);
+      popupTaskId = null;
+      return;
+    }
+
+    // Task complete (non-chat)
+    if (stepRes.completed || stepRes.action?.type === 'COMPLETE') {
       appendPopupMsg('system', `🎉 Task Complete! ${stepRes.status_summary}`);
       popupTaskId = null;
       return;
     }
 
-    if (stepRes.action.type === 'NAVIGATE' && stepRes.action.url) {
-      appendPopupMsg('system', `🌐 Navigating tab to: ${stepRes.action.url}`);
+    // Navigate action
+    if (stepRes.action?.type === 'NAVIGATE' && stepRes.action.url) {
+      appendPopupMsg('system', `🌐 Navigating to: ${stepRes.action.url}`);
       await chrome.tabs.update(tabId, { url: stepRes.action.url });
       popupStepCount++;
+      // Wait for page to load before continuing
       setTimeout(() => {
         runNextPopupAgentStep();
-      }, 3000);
+      }, 4000);
       return;
     }
 
+    // Execute other actions (CLICK, TYPE, SCROLL, etc.)
     try {
       await sendTabMessage({ id: tabId }, { type: 'AGENT_EXECUTE_ACTION', action: stepRes.action });
     } catch (e) {
@@ -815,7 +807,7 @@ document.addEventListener('DOMContentLoaded', () => {
     popupStepCount++;
     setTimeout(() => {
       runNextPopupAgentStep();
-    }, 1500);
+    }, 2000);
   }
 
   if (popupBtnApproveHitl) {
