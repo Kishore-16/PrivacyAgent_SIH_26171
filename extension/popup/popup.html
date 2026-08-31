@@ -5,12 +5,13 @@
   <title>PrivacyAgent — Autonomous Assistant & Dashboard</title>
   <link rel="stylesheet" href="popup.css">
   <link rel="stylesheet" href="../agent/agent_panel.css">
+  <link rel="stylesheet" href="../sahayak/sahayak_modal.css">
 </head>
 <body>
   <header>
     <div class="brand">
       <svg class="shield-icon" viewBox="0 0 24 24">
-        <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-5.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8Standardz"/>
+        <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-5.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8Z"/>
       </svg>
       <div>
         <h1>PrivacyAgent</h1>
@@ -37,9 +38,112 @@
           <div class="msg-avatar">🤖</div>
           <div class="msg-content">
             <strong>Autonomous Privacy Assistant</strong>
-            <p>Tell me what to do (e.g. <em>"Find Nitro V15 laptop at lowest price"</em> or <em>"Send deposit money to account"</em>).</p>
+            <p>Tell me what to do (e.g. <em>"Fill application form"</em> or <em>"Submit deposit to account"</em>).</p>
             <span class="privacy-note">🔒 On-device privacy firewall active. Raw data masked locally.</span>
           </div>
+        </div>
+      </div>
+
+      <!-- Sahayak Smart Document Helper Popup Card (Hidden by default) -->
+      <div class="sahayak-sidepanel-card hidden" id="sahayakPopupCard" style="top: 10px; bottom: 10px; left: 5px; right: 5px;">
+        <div class="sahayak-header">
+          <div class="sahayak-title-group">
+            <h2>🛡️ <span id="pkModalTitle">Sahayak Assistant</span></h2>
+            <span class="sahayak-doc-badge" id="pkDocBadge">📄 File Required: Income Certificate</span>
+          </div>
+          <button class="sahayak-close-btn" id="pkCloseBtn">&times;</button>
+        </div>
+
+        <!-- State Selector -->
+        <div class="sahayak-lang-section" style="margin-bottom: 8px;">
+          <div class="sahayak-lang-label" id="pkStateLabel">🏛️ SELECT STATE / JURISDICTION:</div>
+          <select id="pkStateSelect" style="width: 100%; padding: 8px 12px; background: #334155; border: 1px solid #475569; color: #fff; border-radius: 8px; font-weight: 600; font-size: 0.85rem; outline: none; cursor: pointer;">
+            <option value="National">Central Govt / All India</option>
+            <option value="Uttar Pradesh">Uttar Pradesh (उत्तर प्रदेश)</option>
+            <option value="Maharashtra">Maharashtra (महाराष्ट्र)</option>
+            <option value="Delhi">Delhi (दिल्ली)</option>
+            <option value="Tamil Nadu">Tamil Nadu (தமிழ்நாடு)</option>
+            <option value="Karnataka">Karnataka (ಕರ್ನಾಟಕ)</option>
+            <option value="Bihar">Bihar (बिहार)</option>
+            <option value="West Bengal">West Bengal (পশ্চিমবঙ্গ)</option>
+            <option value="Madhya Pradesh">Madhya Pradesh (मध्य प्रदेश)</option>
+            <option value="Gujarat">Gujarat (ગુજરાત)</option>
+            <option value="Rajasthan">Rajasthan (राजस्थान)</option>
+            <option value="Kerala">Kerala (கேரளா / കേരളം)</option>
+            <option value="Punjab">Punjab (ਪੰਜਾਬ)</option>
+            <option value="Haryana">Haryana (हरियाणा)</option>
+            <option value="Andhra Pradesh">Andhra Pradesh (ఆంధ్రప్రదేశ్)</option>
+          </select>
+        </div>
+
+        <!-- Language Selector -->
+        <div class="sahayak-lang-section">
+          <div class="sahayak-lang-label" id="pkLangLabel">🌐 SELECT LANGUAGE (Press key 1-5):</div>
+          <div class="sahayak-lang-buttons" id="pkLangButtons">
+            <button class="sahayak-lang-btn active" data-lang-key="1">[1] English</button>
+            <button class="sahayak-lang-btn" data-lang-key="2">[2] हिन्दी</button>
+            <button class="sahayak-lang-btn" data-lang-key="3">[3] தமிழ்</button>
+            <button class="sahayak-lang-btn" data-lang-key="4">[4] తెలుగు</button>
+            <button class="sahayak-lang-btn" data-lang-key="5">[5] বাংলা</button>
+          </div>
+        </div>
+
+
+        <!-- About Document & How to Identify Section -->
+        <div class="sahayak-info-box">
+          <div class="sahayak-section-header" id="pkAboutTitle">ℹ️ WHAT IS THIS DOCUMENT?</div>
+          <div class="sahayak-doc-title-text" id="pkDocTitle">Income Certificate (आय प्रमाण पत्र)</div>
+          <div class="sahayak-doc-desc" id="pkDocDesc">
+            An official government document certifying your annual household income issued by Revenue Dept / Tehsildar office.
+          </div>
+          <div class="sahayak-identify-box">
+            <strong id="pkIdentifyTitle">🔍 HOW TO IDENTIFY THIS FILE:</strong>
+            <p id="pkIdentifyText">Look for State Emblem at top, Tehsildar signature/stamp at bottom, and a 12-to-16 digit Certificate Number.</p>
+          </div>
+        </div>
+
+        <!-- Drag & Drop Upload Zone -->
+        <div class="sahayak-drop-zone" id="pkDropZone">
+          <span class="sahayak-drop-icon">📁</span>
+          <div class="sahayak-drop-text" id="pkDropText">
+            Drag & Drop File Here or <span class="sahayak-browse-link" id="pkBrowseLink">Browse Computer</span>
+          </div>
+          <div class="sahayak-selected-file" id="pkSelectedFile"></div>
+          <div class="sahayak-privacy-badge">
+            🔒 Protected by PrivacyAgent On-Device Redaction
+          </div>
+          <input type="file" id="pkFileInput" class="sahayak-file-input" accept="image/*,.pdf,.doc,.docx" />
+        </div>
+
+        <!-- Help Center: Online & Offline Procedures -->
+        <div class="sahayak-instructions">
+          <div class="sahayak-instructions-title" id="pkHelpTitle">💡 HELP CENTER (Don't have this document?)</div>
+          <div class="sahayak-portal-bar">
+            <div class="sahayak-portal-info">
+              <span id="pkPortalPrefix">🔗 Official State Portal:</span> <strong id="pkPortalName">e-District Portal</strong>
+            </div>
+            <a href="https://edistrict.gov.in" target="_blank" rel="noopener noreferrer" class="sahayak-portal-btn" id="pkPortalBtn">
+              Open Portal ↗
+            </a>
+          </div>
+
+          <div class="sahayak-proc-section">
+            <div class="sahayak-proc-heading" id="pkOnlineProcTitle">🌐 ONLINE PROCEDURE:</div>
+            <div class="sahayak-steps-list" id="pkOnlineStepsList"></div>
+          </div>
+
+          <div class="sahayak-proc-section" style="margin-top: 10px;">
+            <div class="sahayak-proc-heading" id="pkOfflineProcTitle">🏛️ OFFLINE STATE PROCEDURE:</div>
+            <div class="sahayak-steps-list" id="pkOfflineStepsList"></div>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="sahayak-actions">
+          <button class="sahayak-btn-cancel" id="pkCancelBtn">Cancel</button>
+          <button class="sahayak-btn-submit" id="pkSubmitBtn" disabled>
+            Attach File to Form 🚀
+          </button>
         </div>
       </div>
 
@@ -178,6 +282,7 @@
     </div>
   </div>
 
+  <script src="../sahayak/sahayak_config.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

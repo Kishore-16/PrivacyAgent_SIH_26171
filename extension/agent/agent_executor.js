@@ -17,25 +17,33 @@ window.PrivacyAgentExecutor = (() => {
         el.setAttribute('data-agent-id', agentId);
       }
 
-      // Check visibility
+      // Check visibility or file input type
       const rect = el.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0) {
+      const isFileInput = el.tagName.toLowerCase() === 'input' && el.type === 'file';
+      if ((rect.width > 0 && rect.height > 0) || isFileInput) {
+        let textVal = (el.innerText || el.value || el.name || el.id || el.getAttribute('aria-label') || el.placeholder || '').trim();
+        if (isFileInput && (!textVal || textVal.toLowerCase() === 'file')) {
+          const labelOrParent = el.labels && el.labels.length > 0 ? el.labels[0].innerText : (el.parentElement ? el.parentElement.innerText : '');
+          textVal = (labelOrParent || 'Income Certificate Document Field').slice(0, 100);
+        }
+
         nodes.push({
           agentId: agentId,
           tag: el.tagName.toLowerCase(),
           type: el.type || null,
-          text: (el.innerText || el.value || el.getAttribute('aria-label') || el.placeholder || '').trim().slice(0, 100),
+          text: textVal.slice(0, 100),
           placeholder: el.placeholder || '',
           ariaLabel: el.getAttribute('aria-label') || '',
           selector: getSimpleCssSelector(el),
           rect: {
             x: Math.round(rect.left),
             y: Math.round(rect.top),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height)
+            width: Math.round(rect.width || 100),
+            height: Math.round(rect.height || 30)
           }
         });
       }
+
     });
 
     return nodes;
@@ -74,10 +82,25 @@ window.PrivacyAgentExecutor = (() => {
       if (type === 'CLICK' || type === 'CLICK_AND_WAIT') {
         if (!targetEl) return { ok: false, error: `Element not found: ${targetId || selector}` };
         
+        // Sahayak Hook: If targeting a file input that has no file attached, open Sahayak Assistant
+        if (targetEl.tagName.toLowerCase() === 'input' && targetEl.type === 'file' && (!targetEl.files || targetEl.files.length === 0)) {
+          if (window.SahayakDetector) {
+            window.SahayakDetector.handleMissingDocument(targetEl);
+            return { ok: true, detail: 'Sahayak Smart Document Helper opened for missing file input' };
+          }
+        }
+
         targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         targetEl.focus();
         targetEl.click();
         return { ok: true, detail: `Clicked element ${targetEl.tagName}` };
+      }
+
+      if (type === 'SAHAYAK_TRIGGER' || type === 'UPLOAD_DOCUMENT') {
+        if (window.SahayakDetector) {
+          window.SahayakDetector.handleMissingDocument(targetEl);
+          return { ok: true, detail: 'Sahayak Smart Document Helper activated' };
+        }
       }
 
       if (type === 'TYPE' || type === 'TYPE_AND_ENTER') {
@@ -148,10 +171,21 @@ window.PrivacyAgentExecutor = (() => {
       } else if (msg.type === 'AGENT_EXECUTE_ACTION') {
         const res = executeAction(msg.action);
         sendResponse(res);
+      } else if (msg.type === 'SAHAYAK_ATTACH_FILE') {
+        let el = msg.selector ? document.querySelector(msg.selector) : document.querySelector('input[type="file"]');
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.style.outline = '3px solid #10b981';
+          setTimeout(() => { el.style.outline = ''; }, 3000);
+          sendResponse({ ok: true, detail: `Attached file '${msg.fileName}' to element` });
+        } else {
+          sendResponse({ ok: false, error: 'File input element not found' });
+        }
       }
       return true;
     });
   }
+
 
   return {
     tagInteractiveElements,

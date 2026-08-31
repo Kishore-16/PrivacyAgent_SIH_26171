@@ -41,10 +41,22 @@
         "privacy/firewall.js",
         "actions/validator.js",
         "actions/executor.js",
+        "sahayak/sahayak_config.js",
+        "sahayak/sahayak_modal.js",
+        "sahayak/sahayak_detector.js",
         "agent/agent_executor.js",
         "content/content.js"
       ],
+      "css": [
+        "sahayak/sahayak_modal.css"
+      ],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["sahayak/sahayak_modal.css"],
+      "matches": ["<all_urls>"]
     }
   ],
   "icons": {
@@ -52,3 +64,4 @@
     "128": "images (1).jpg"
   }
 }
+

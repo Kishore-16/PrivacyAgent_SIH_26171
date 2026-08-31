@@ -9,11 +9,45 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnApproveHitl = document.getElementById('btnApproveHitl');
   const btnCancelHitl = document.getElementById('btnCancelHitl');
 
+  // Sahayak Sidepanel Elements
+  const sahayakCard = document.getElementById('sahayakSidepanelCard');
+  const shkModalTitle = document.getElementById('shkModalTitle');
+  const shkDocBadge = document.getElementById('shkDocBadge');
+  const shkCloseBtn = document.getElementById('shkCloseBtn');
+  const shkCancelBtn = document.getElementById('shkCancelBtn');
+  const shkSubmitBtn = document.getElementById('shkSubmitBtn');
+  const shkLangButtons = document.getElementById('shkLangButtons');
+  const shkAboutTitle = document.getElementById('shkAboutTitle');
+  const shkDocTitle = document.getElementById('shkDocTitle');
+  const shkDocDesc = document.getElementById('shkDocDesc');
+  const shkIdentifyTitle = document.getElementById('shkIdentifyTitle');
+  const shkIdentifyText = document.getElementById('shkIdentifyText');
+  const shkDropZone = document.getElementById('shkDropZone');
+  const shkDropText = document.getElementById('shkDropText');
+  const shkBrowseLink = document.getElementById('shkBrowseLink');
+  const shkFileInput = document.getElementById('shkFileInput');
+  const shkSelectedFile = document.getElementById('shkSelectedFile');
+  const shkHelpTitle = document.getElementById('shkHelpTitle');
+  const shkPortalPrefix = document.getElementById('shkPortalPrefix');
+  const shkPortalName = document.getElementById('shkPortalName');
+  const shkPortalBtn = document.getElementById('shkPortalBtn');
+  const shkOnlineProcTitle = document.getElementById('shkOnlineProcTitle');
+  const shkOnlineStepsList = document.getElementById('shkOnlineStepsList');
+  const shkOfflineProcTitle = document.getElementById('shkOfflineProcTitle');
+  const shkOfflineStepsList = document.getElementById('shkOfflineStepsList');
+
   const SERVER_BASE = 'http://127.0.0.1:8000/agent';
   let currentTaskId = null;
   let currentGoal = '';
   let stepCounter = 1;
   let pendingStepData = null;
+
+  // Sahayak State
+  let shkActiveLangKey = "1"; // Default: English
+  let shkActiveDocType = "generic";
+  let shkSelectedFileObj = null;
+  let shkTargetSelector = null;
+  let shkIsProcessing = false;
 
   function setStatus(text, isBusy = false) {
     statusText.textContent = text;
@@ -84,6 +118,274 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // --- SAHAYAK SIDEPANEL MANAGER ---
+  function openSahayakCard(docType = "generic", selector = null) {
+    shkActiveDocType = docType;
+    shkTargetSelector = selector;
+    shkSelectedFileObj = null;
+    shkIsProcessing = false;
+    sahayakCard.classList.remove('hidden');
+    renderSahayakUI();
+  }
+
+  function closeSahayakCard() {
+    sahayakCard.classList.add('hidden');
+  }
+
+  async function renderSahayakUI() {
+    if (typeof SahayakConfig === 'undefined') return;
+
+    const langCode = SahayakConfig.LANGUAGES[shkActiveLangKey]?.code || "en";
+    const strings = SahayakConfig.UI_STRINGS[langCode] || SahayakConfig.UI_STRINGS.en;
+    const docConfig = SahayakConfig.getDocConfig(shkActiveDocType);
+
+    let docTitleText = docConfig.displayTitle[langCode] || docConfig.displayTitle.en;
+    let descText = docConfig.description[langCode] || docConfig.description.en;
+    let identifyText = docConfig.howToIdentify[langCode] || docConfig.howToIdentify.en;
+    let onlineSteps = docConfig.onlineSteps[langCode] || docConfig.onlineSteps.en;
+    let offlineSteps = docConfig.offlineSteps[langCode] || docConfig.offlineSteps.en;
+    let portalName = docConfig.portalName;
+    let portalUrl = docConfig.portalUrl;
+
+    // Read selected State / Jurisdiction from state dropdown
+    const shkStateSelect = $('#shkStateSelect');
+    const selectedState = shkStateSelect?.value || 'National';
+
+    // Apply Skeleton Loading state while OpenRouter AI generates content
+    if (shkDocTitle) shkDocTitle.classList.add('sahayak-skeleton');
+    if (shkDocDesc) shkDocDesc.classList.add('sahayak-skeleton');
+    if (shkIdentifyText) shkIdentifyText.classList.add('sahayak-skeleton');
+    if (shkPortalName) shkPortalName.classList.add('sahayak-skeleton');
+    if (shkOnlineStepsList) {
+      shkOnlineStepsList.innerHTML = `
+        <div class="sahayak-step-card sahayak-skeleton" style="height:36px; margin-bottom:6px;"></div>
+        <div class="sahayak-step-card sahayak-skeleton" style="height:36px;"></div>
+      `;
+    }
+    if (shkOfflineStepsList) {
+      shkOfflineStepsList.innerHTML = `
+        <div class="sahayak-step-card sahayak-skeleton" style="height:36px; margin-bottom:6px;"></div>
+        <div class="sahayak-step-card sahayak-skeleton" style="height:36px;"></div>
+      `;
+    }
+
+    // Fetch dynamic state-specific AI guidance from OpenRouter API via local server
+    try {
+      const aiResp = await fetch(`http://127.0.0.1:8000/sahayak/guides?doc=${encodeURIComponent(shkActiveDocType)}&state=${encodeURIComponent(selectedState)}&lang=${langCode}`);
+      if (aiResp.ok) {
+        const aiData = await aiResp.json();
+        if (aiData.ok && aiData.guide) {
+          const g = aiData.guide;
+          if (g.title) docTitleText = g.title;
+          if (g.description) descText = g.description;
+          if (g.how_to_identify) identifyText = g.how_to_identify;
+          if (g.portal_name) portalName = g.portal_name;
+          if (g.portal_url) portalUrl = g.portal_url;
+          if (g.online_steps && g.online_steps.length > 0) onlineSteps = g.online_steps;
+          if (g.offline_steps && g.offline_steps.length > 0) offlineSteps = g.offline_steps;
+        }
+      }
+    } catch (netErr) {
+      console.warn('[Sahayak Sidepanel] AI Guide endpoint fallback:', netErr.message);
+    } finally {
+      // Remove Skeleton Loading classes
+      if (shkDocTitle) shkDocTitle.classList.remove('sahayak-skeleton');
+      if (shkDocDesc) shkDocDesc.classList.remove('sahayak-skeleton');
+      if (shkIdentifyText) shkIdentifyText.classList.remove('sahayak-skeleton');
+      if (shkPortalName) shkPortalName.classList.remove('sahayak-skeleton');
+    }
+
+    if (shkStateSelect && !shkStateSelect.dataset.bound) {
+      shkStateSelect.dataset.bound = 'true';
+      shkStateSelect.onchange = () => renderSahayakUI();
+    }
+
+
+
+    // Header & Titles
+    if (shkModalTitle) shkModalTitle.textContent = strings.modalTitle;
+    if (shkDocBadge) shkDocBadge.textContent = `${strings.requiredDocLabel} ${docTitleText}`;
+    if (shkAboutTitle) shkAboutTitle.textContent = strings.aboutTitle;
+    if (shkDocTitle) shkDocTitle.textContent = docTitleText;
+    if (shkDocDesc) shkDocDesc.textContent = descText;
+    if (shkIdentifyTitle) shkIdentifyTitle.textContent = strings.identifyTitle;
+    if (shkIdentifyText) shkIdentifyText.textContent = identifyText;
+
+    // Language Buttons Active State
+    if (shkLangButtons) {
+      shkLangButtons.querySelectorAll('.sahayak-lang-btn').forEach(btn => {
+        const key = btn.getAttribute('data-lang-key');
+        if (key === shkActiveLangKey) {
+          btn.classList.add('active');
+        } else {
+          btn.classList.remove('active');
+        }
+      });
+    }
+
+    // Selected File
+    if (shkSelectedFile) {
+      shkSelectedFile.textContent = shkSelectedFileObj ? `📄 Selected: ${shkSelectedFileObj.name}` : '';
+    }
+
+    // Help Center
+    if (shkHelpTitle) shkHelpTitle.textContent = strings.instructionCenterTitle;
+    if (shkPortalPrefix) shkPortalPrefix.textContent = strings.officialLinkPrefix;
+    if (shkPortalName) shkPortalName.textContent = portalName;
+    if (shkPortalBtn) {
+      shkPortalBtn.href = portalUrl;
+      shkPortalBtn.textContent = strings.openPortalBtn;
+    }
+    if (shkOnlineProcTitle) shkOnlineProcTitle.textContent = strings.onlineProcedureTitle;
+    if (shkOfflineProcTitle) shkOfflineProcTitle.textContent = strings.offlineProcedureTitle;
+
+    // Steps Lists
+    if (shkOnlineStepsList) {
+      shkOnlineStepsList.innerHTML = onlineSteps.map((step, idx) => `
+        <div class="sahayak-step-card">
+          <span class="sahayak-step-num">${idx + 1}️⃣</span>
+          <span>${step}</span>
+        </div>
+      `).join('');
+    }
+
+    if (shkOfflineStepsList) {
+      shkOfflineStepsList.innerHTML = offlineSteps.map((step, idx) => `
+        <div class="sahayak-step-card" style="border-left-color: #fbbf24;">
+          <span class="sahayak-step-num" style="color: #fbbf24;">🏛️</span>
+          <span>${step}</span>
+        </div>
+      `).join('');
+    }
+
+    // Submit Button state
+    if (shkSubmitBtn) {
+      shkSubmitBtn.disabled = !shkSelectedFileObj || shkIsProcessing;
+      shkSubmitBtn.textContent = shkIsProcessing ? strings.processingText : strings.submitBtn;
+    }
+  }
+
+
+  // Language Button Click Listeners
+  if (shkLangButtons) {
+    shkLangButtons.querySelectorAll('.sahayak-lang-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        const key = e.target.getAttribute('data-lang-key');
+        if (key) {
+          shkActiveLangKey = key;
+          renderSahayakUI();
+        }
+      };
+    });
+  }
+
+  // Global Keyboard Listener for Number Keys 1-5 inside Sidepanel
+  window.addEventListener('keydown', (e) => {
+    if (sahayakCard.classList.contains('hidden')) return;
+    if (['1', '2', '3', '4', '5'].includes(e.key)) {
+      shkActiveLangKey = e.key;
+      renderSahayakUI();
+    } else if (e.key === 'Escape') {
+      closeSahayakCard();
+    }
+  });
+
+  // File Browse & Drag & Drop
+  if (shkBrowseLink && shkFileInput) {
+    shkBrowseLink.onclick = (e) => {
+      e.stopPropagation();
+      shkFileInput.click();
+    };
+  }
+
+  if (shkDropZone && shkFileInput) {
+    shkDropZone.onclick = () => shkFileInput.click();
+    shkDropZone.ondragover = (e) => {
+      e.preventDefault();
+      shkDropZone.classList.add('dragover');
+    };
+    shkDropZone.ondragleave = () => shkDropZone.classList.remove('dragover');
+    shkDropZone.ondrop = (e) => {
+      e.preventDefault();
+      shkDropZone.classList.remove('dragover');
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        shkSelectedFileObj = e.dataTransfer.files[0];
+        renderSahayakUI();
+      }
+    };
+  }
+
+  if (shkFileInput) {
+    shkFileInput.onchange = (e) => {
+      if (e.target.files && e.target.files.length > 0) {
+        shkSelectedFileObj = e.target.files[0];
+        renderSahayakUI();
+      }
+    };
+  }
+
+  if (shkCloseBtn) shkCloseBtn.onclick = closeSahayakCard;
+  if (shkCancelBtn) shkCancelBtn.onclick = closeSahayakCard;
+
+  // File Upload Submission & Redaction
+  if (shkSubmitBtn) {
+    shkSubmitBtn.onclick = async () => {
+      if (!shkSelectedFileObj) return;
+
+      shkIsProcessing = true;
+      renderSahayakUI();
+
+      try {
+        const base64Data = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result);
+          r.onerror = (e) => rej(e);
+          r.readAsDataURL(shkSelectedFileObj);
+        });
+
+        // Call local vision redaction engine
+        try {
+          await fetch('http://127.0.0.1:8000/sahayak/process-document', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              document_type: shkActiveDocType,
+              image_data: base64Data,
+              redaction_mode: 'BLUR',
+              client_attestation: true
+            })
+          });
+        } catch (netErr) {
+          console.warn('[Sahayak Sidepanel] Redaction endpoint offline fallback:', netErr);
+        }
+
+        // Attach file to webpage input element
+        const activeTab = await getActiveTab();
+        if (activeTab) {
+          await chrome.tabs.sendMessage(activeTab.id, {
+            type: 'SAHAYAK_ATTACH_FILE',
+            selector: shkTargetSelector,
+            fileName: shkSelectedFileObj.name
+          });
+        }
+
+        appendMessage('system', `✅ Sahayak attached document '${shkSelectedFileObj.name}' to form.`);
+        closeSahayakCard();
+
+        // Resume step execution if pending
+        if (currentTaskId) {
+          stepCounter++;
+          setTimeout(runNextStep, 1500);
+        }
+      } catch (err) {
+        appendMessage('system', `⚠️ Sahayak File Error: ${err.message}`);
+        shkIsProcessing = false;
+        renderSahayakUI();
+      }
+    };
+  }
+
+  // --- MAIN AGENT LOOP ---
   async function startAgentTask(goalText) {
     currentGoal = goalText;
     stepCounter = 1;
@@ -118,6 +420,17 @@ document.addEventListener('DOMContentLoaded', () => {
     setStatus(`Executing Step ${stepCounter}...`, true);
     const activeTab = await getActiveTab();
     const domData = await requestTabDomNodes(activeTab.id);
+
+    // Check if DOM contains empty file input requiring Sahayak
+    const missingFileInput = (domData.nodes || []).find(n => n.tag === 'input' && n.type === 'file');
+    if (missingFileInput) {
+      const docName = missingFileInput.text || missingFileInput.placeholder || 'Income Certificate';
+      appendMessage('system', `📄 Sahayak Assistant triggered for '${docName}'.`);
+      openSahayakCard(docName, missingFileInput.selector);
+      setStatus('Awaiting Document Upload', true);
+      return;
+    }
+
 
     const stepPayload = {
       task_id: currentTaskId,
@@ -188,7 +501,6 @@ document.addEventListener('DOMContentLoaded', () => {
       runNextStep();
     }, 1500);
   }
-
 
   function showHitlModal(reason, promptText) {
     setStatus('Awaiting Approval', true);

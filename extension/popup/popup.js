@@ -6,14 +6,8 @@ document.addEventListener('DOMContentLoaded', () => {
     return tabs[0];
   }
 
-  // Programmatically inject content scripts if they aren't already loaded.
-  // This fixes the "receiving end does not exist" error for tabs that were
-  // open before the extension was installed or reloaded.
   async function ensureContentScripts(tab) {
     if (!tab || !tab.id) return;
-
-    // Internal browser pages cannot receive content script DOM messages directly,
-    // but the tab can still be navigated by the agent.
     const url = tab.url || '';
     if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') ||
         url.startsWith('edge://') || url.startsWith('about:') || url === '') {
@@ -48,7 +42,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-
   async function sendTabMessage(tab, msg) {
     await ensureContentScripts(tab);
     return new Promise((resolve, reject) => {
@@ -82,8 +75,7 @@ document.addEventListener('DOMContentLoaded', () => {
     canvas.height = image.naturalHeight;
     const context = canvas.getContext('2d');
     context.drawImage(image, 0, 0);
-    // captureVisibleTab dimensions can differ at browser zoom, so derive scale
-    // from the captured bitmap instead of assuming devicePixelRatio.
+
     const scaleX = image.naturalWidth / mask.viewportWidth;
     const scaleY = image.naturalHeight / mask.viewportHeight;
     
@@ -95,7 +87,6 @@ document.addEventListener('DOMContentLoaded', () => {
       const rw = region.width * scaleX + paddingX * 2;
       const rh = region.height * scaleY + paddingY * 2;
       
-      // Draw semantic box
       context.fillStyle = 'rgb(240, 240, 245)';
       context.fillRect(rx, ry, rw, rh);
       context.strokeStyle = 'rgb(124, 58, 237)';
@@ -146,8 +137,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const tab = await getActiveTab();
     await runScan();
 
-    // The raw capture remains in extension memory only.  Only the canvas copy
-    // with local DOM/image redactions is eligible for server transmission.
     const sanitized = await createSanitizedScreenshot(tab);
     const visionRes = await sendBgMessage({
       type: 'VISION_ANALYZE',
@@ -170,7 +159,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return visionRes;
   }
 
-  // 1. Scan Button
+  // Dashboard Buttons
   $('#btn-scan').onclick = async () => {
     try {
       $('#decision-out').textContent = 'Scanning DOM & evaluating PII patterns...';
@@ -183,7 +172,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-  // 2. Show Sanitized Preview
   $('#btn-preview').onclick = async () => {
     try {
       const tab = await getActiveTab();
@@ -202,7 +190,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-  // 3. Get Safe Agent Action
   let pendingAction = null;
 
   $('#btn-plan').onclick = async () => {
@@ -228,7 +215,6 @@ document.addEventListener('DOMContentLoaded', () => {
         $('#confirm-msg').textContent = `PrivacyAgent wants to execute high-risk action: ${action.type} "${action.label}". Proceed?`;
         $('#confirm-modal').style.display = 'flex';
       } else {
-        // Low-risk action executes immediately
         const execRes = await sendBgMessage({
           type: 'EXECUTE_ACTION',
           tabId: tab.id,
@@ -242,14 +228,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-  // 4. Auto-fill Secure Data
   $('#btn-autofill').onclick = async () => {
     try {
       $('#decision-out').textContent = 'Fetching secure data from extension storage...';
-      
       let profile = null;
-      
-      // Promisify chrome.storage.local.get
       const stored = await new Promise((resolve) => {
         chrome.storage.local.get(['secureProfile'], resolve);
       });
@@ -257,16 +239,12 @@ document.addEventListener('DOMContentLoaded', () => {
       if (stored.secureProfile && Object.keys(stored.secureProfile).length > 0) {
         profile = stored.secureProfile;
       } else {
-        // Fallback to reading dummy data from local extension package
         const res = await fetch(chrome.runtime.getURL('profile.json'));
         profile = await res.json();
-        // Save it to storage for next time
         chrome.storage.local.set({ secureProfile: profile });
       }
       
-      if (!profile) {
-        throw new Error('Failed to load secure profile data');
-      }
+      if (!profile) throw new Error('Failed to load secure profile data');
 
       const tab = await getActiveTab();
       const fillRes = await sendTabMessage(tab, { type: 'AUTOFILL', profile: profile });
@@ -328,7 +306,293 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
 
-  // Popup Embedded Agent Task Loop
+  // --- SAHAYAK ASSISTANT POPUP MANAGER ---
+  const sahayakPopupCard = $('#sahayakPopupCard');
+  const pkModalTitle = $('#pkModalTitle');
+  const pkDocBadge = $('#pkDocBadge');
+  const pkCloseBtn = $('#pkCloseBtn');
+  const pkCancelBtn = $('#pkCancelBtn');
+  const pkSubmitBtn = $('#pkSubmitBtn');
+  const pkLangButtons = $('#pkLangButtons');
+  const pkAboutTitle = $('#pkAboutTitle');
+  const pkDocTitle = $('#pkDocTitle');
+  const pkDocDesc = $('#pkDocDesc');
+  const pkIdentifyTitle = $('#pkIdentifyTitle');
+  const pkIdentifyText = $('#pkIdentifyText');
+  const pkDropZone = $('#pkDropZone');
+  const pkDropText = $('#pkDropText');
+  const pkBrowseLink = $('#pkBrowseLink');
+  const pkFileInput = $('#pkFileInput');
+  const pkSelectedFile = $('#pkSelectedFile');
+  const pkHelpTitle = $('#pkHelpTitle');
+  const pkPortalPrefix = $('#pkPortalPrefix');
+  const pkPortalName = $('#pkPortalName');
+  const pkPortalBtn = $('#pkPortalBtn');
+  const pkOnlineProcTitle = $('#pkOnlineProcTitle');
+  const pkOnlineStepsList = $('#pkOnlineStepsList');
+  const pkOfflineProcTitle = $('#pkOfflineProcTitle');
+  const pkOfflineStepsList = $('#pkOfflineStepsList');
+
+  let pkActiveLangKey = "1";
+  let pkActiveDocType = "generic";
+  let pkSelectedFileObj = null;
+  let pkTargetSelector = null;
+  let pkIsProcessing = false;
+
+  function openSahayakPopup(docType = "generic", selector = null) {
+    if (!sahayakPopupCard) return;
+    pkActiveDocType = docType;
+    pkTargetSelector = selector;
+    pkSelectedFileObj = null;
+    pkIsProcessing = false;
+    sahayakPopupCard.classList.remove('hidden');
+    renderSahayakPopupUI();
+  }
+
+  function closeSahayakPopup() {
+    if (sahayakPopupCard) sahayakPopupCard.classList.add('hidden');
+  }
+
+  async function renderSahayakPopupUI() {
+    if (typeof SahayakConfig === 'undefined') return;
+
+    const langCode = SahayakConfig.LANGUAGES[pkActiveLangKey]?.code || "en";
+    const strings = SahayakConfig.UI_STRINGS[langCode] || SahayakConfig.UI_STRINGS.en;
+    const docConfig = SahayakConfig.getDocConfig(pkActiveDocType);
+
+    let docTitleText = docConfig.displayTitle[langCode] || docConfig.displayTitle.en;
+    let descText = docConfig.description[langCode] || docConfig.description.en;
+    let identifyText = docConfig.howToIdentify[langCode] || docConfig.howToIdentify.en;
+    let onlineSteps = docConfig.onlineSteps[langCode] || docConfig.onlineSteps.en;
+    let offlineSteps = docConfig.offlineSteps[langCode] || docConfig.offlineSteps.en;
+    let portalName = docConfig.portalName;
+    let portalUrl = docConfig.portalUrl;
+
+    // Read selected State / Jurisdiction from state dropdown
+    const pkStateSelect = $('#pkStateSelect');
+    const selectedState = pkStateSelect?.value || 'National';
+
+    // Apply Skeleton Loading state while OpenRouter AI generates content
+    if (pkDocTitle) pkDocTitle.classList.add('sahayak-skeleton');
+    if (pkDocDesc) pkDocDesc.classList.add('sahayak-skeleton');
+    if (pkIdentifyText) pkIdentifyText.classList.add('sahayak-skeleton');
+    if (pkPortalName) pkPortalName.classList.add('sahayak-skeleton');
+    if (pkOnlineStepsList) {
+      pkOnlineStepsList.innerHTML = `
+        <div class="sahayak-step-card sahayak-skeleton" style="height:36px; margin-bottom:6px;"></div>
+        <div class="sahayak-step-card sahayak-skeleton" style="height:36px;"></div>
+      `;
+    }
+    if (pkOfflineStepsList) {
+      pkOfflineStepsList.innerHTML = `
+        <div class="sahayak-step-card sahayak-skeleton" style="height:36px; margin-bottom:6px;"></div>
+        <div class="sahayak-step-card sahayak-skeleton" style="height:36px;"></div>
+      `;
+    }
+
+    // Fetch dynamic state-specific AI guidance from OpenRouter API via local server
+    try {
+      const aiResp = await fetch(`http://127.0.0.1:8000/sahayak/guides?doc=${encodeURIComponent(pkActiveDocType)}&state=${encodeURIComponent(selectedState)}&lang=${langCode}`);
+      if (aiResp.ok) {
+        const aiData = await aiResp.json();
+        if (aiData.ok && aiData.guide) {
+          const g = aiData.guide;
+          if (g.title) docTitleText = g.title;
+          if (g.description) descText = g.description;
+          if (g.how_to_identify) identifyText = g.how_to_identify;
+          if (g.portal_name) portalName = g.portal_name;
+          if (g.portal_url) portalUrl = g.portal_url;
+          if (g.online_steps && g.online_steps.length > 0) onlineSteps = g.online_steps;
+          if (g.offline_steps && g.offline_steps.length > 0) offlineSteps = g.offline_steps;
+        }
+      }
+    } catch (netErr) {
+      console.warn('[Sahayak Popup] AI Guide endpoint fallback:', netErr.message);
+    } finally {
+      // Remove Skeleton Loading classes
+      if (pkDocTitle) pkDocTitle.classList.remove('sahayak-skeleton');
+      if (pkDocDesc) pkDocDesc.classList.remove('sahayak-skeleton');
+      if (pkIdentifyText) pkIdentifyText.classList.remove('sahayak-skeleton');
+      if (pkPortalName) pkPortalName.classList.remove('sahayak-skeleton');
+    }
+
+    if (pkStateSelect && !pkStateSelect.dataset.bound) {
+      pkStateSelect.dataset.bound = 'true';
+      pkStateSelect.onchange = () => renderSahayakPopupUI();
+    }
+
+
+
+    if (pkModalTitle) pkModalTitle.textContent = strings.modalTitle;
+    if (pkDocBadge) pkDocBadge.textContent = `${strings.requiredDocLabel} ${docTitleText}`;
+    if (pkAboutTitle) pkAboutTitle.textContent = strings.aboutTitle;
+    if (pkDocTitle) pkDocTitle.textContent = docTitleText;
+    if (pkDocDesc) pkDocDesc.textContent = descText;
+    if (pkIdentifyTitle) pkIdentifyTitle.textContent = strings.identifyTitle;
+    if (pkIdentifyText) pkIdentifyText.textContent = identifyText;
+
+    if (pkLangButtons) {
+      pkLangButtons.querySelectorAll('.sahayak-lang-btn').forEach(btn => {
+        const key = btn.getAttribute('data-lang-key');
+        if (key === pkActiveLangKey) {
+          btn.classList.add('active');
+        } else {
+          btn.classList.remove('active');
+        }
+      });
+    }
+
+    if (pkSelectedFile) {
+      pkSelectedFile.textContent = pkSelectedFileObj ? `📄 Selected: ${pkSelectedFileObj.name}` : '';
+    }
+
+    if (pkHelpTitle) pkHelpTitle.textContent = strings.instructionCenterTitle;
+    if (pkPortalPrefix) pkPortalPrefix.textContent = strings.officialLinkPrefix;
+    if (pkPortalName) pkPortalName.textContent = portalName;
+    if (pkPortalBtn) {
+      pkPortalBtn.href = portalUrl;
+      pkPortalBtn.textContent = strings.openPortalBtn;
+    }
+    if (pkOnlineProcTitle) pkOnlineProcTitle.textContent = strings.onlineProcedureTitle;
+    if (pkOfflineProcTitle) pkOfflineProcTitle.textContent = strings.offlineProcedureTitle;
+
+    if (pkOnlineStepsList) {
+      pkOnlineStepsList.innerHTML = onlineSteps.map((step, idx) => `
+        <div class="sahayak-step-card">
+          <span class="sahayak-step-num">${idx + 1}️⃣</span>
+          <span>${step}</span>
+        </div>
+      `).join('');
+    }
+
+    if (pkOfflineStepsList) {
+      pkOfflineStepsList.innerHTML = offlineSteps.map((step, idx) => `
+        <div class="sahayak-step-card" style="border-left-color: #fbbf24;">
+          <span class="sahayak-step-num" style="color: #fbbf24;">🏛️</span>
+          <span>${step}</span>
+        </div>
+      `).join('');
+    }
+
+    if (pkSubmitBtn) {
+      pkSubmitBtn.disabled = !pkSelectedFileObj || pkIsProcessing;
+      pkSubmitBtn.textContent = pkIsProcessing ? strings.processingText : strings.submitBtn;
+    }
+  }
+
+
+  if (pkLangButtons) {
+    pkLangButtons.querySelectorAll('.sahayak-lang-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        const key = e.target.getAttribute('data-lang-key');
+        if (key) {
+          pkActiveLangKey = key;
+          renderSahayakPopupUI();
+        }
+      };
+    });
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (!sahayakPopupCard || sahayakPopupCard.classList.contains('hidden')) return;
+    if (['1', '2', '3', '4', '5'].includes(e.key)) {
+      pkActiveLangKey = e.key;
+      renderSahayakPopupUI();
+    } else if (e.key === 'Escape') {
+      closeSahayakPopup();
+    }
+  });
+
+  if (pkBrowseLink && pkFileInput) {
+    pkBrowseLink.onclick = (e) => {
+      e.stopPropagation();
+      pkFileInput.click();
+    };
+  }
+
+  if (pkDropZone && pkFileInput) {
+    pkDropZone.onclick = () => pkFileInput.click();
+    pkDropZone.ondragover = (e) => {
+      e.preventDefault();
+      pkDropZone.classList.add('dragover');
+    };
+    pkDropZone.ondragleave = () => pkDropZone.classList.remove('dragover');
+    pkDropZone.ondrop = (e) => {
+      e.preventDefault();
+      pkDropZone.classList.remove('dragover');
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        pkSelectedFileObj = e.dataTransfer.files[0];
+        renderSahayakPopupUI();
+      }
+    };
+  }
+
+  if (pkFileInput) {
+    pkFileInput.onchange = (e) => {
+      if (e.target.files && e.target.files.length > 0) {
+        pkSelectedFileObj = e.target.files[0];
+        renderSahayakPopupUI();
+      }
+    };
+  }
+
+  if (pkCloseBtn) pkCloseBtn.onclick = closeSahayakPopup;
+  if (pkCancelBtn) pkCancelBtn.onclick = closeSahayakPopup;
+
+  if (pkSubmitBtn) {
+    pkSubmitBtn.onclick = async () => {
+      if (!pkSelectedFileObj) return;
+      pkIsProcessing = true;
+      renderSahayakPopupUI();
+
+      try {
+        const base64Data = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result);
+          r.onerror = (e) => rej(e);
+          r.readAsDataURL(pkSelectedFileObj);
+        });
+
+        try {
+          await fetch('http://127.0.0.1:8000/sahayak/process-document', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              document_type: pkActiveDocType,
+              image_data: base64Data,
+              redaction_mode: 'BLUR',
+              client_attestation: true
+            })
+          });
+        } catch (netErr) {
+          console.warn('[Sahayak Popup] Server processing fallback:', netErr);
+        }
+
+        const activeTab = await getActiveTab();
+        if (activeTab) {
+          await sendTabMessage(activeTab, {
+            type: 'SAHAYAK_ATTACH_FILE',
+            selector: pkTargetSelector,
+            fileName: pkSelectedFileObj.name
+          });
+        }
+
+        appendPopupMsg('system', `✅ Sahayak attached '${pkSelectedFileObj.name}' to form.`);
+        closeSahayakPopup();
+
+        if (popupTaskId) {
+          popupStepCount++;
+          setTimeout(runNextPopupAgentStep, 1500);
+        }
+      } catch (err) {
+        appendPopupMsg('system', `⚠️ Sahayak File Error: ${err.message}`);
+        pkIsProcessing = false;
+        renderSahayakPopupUI();
+      }
+    };
+  }
+
+  // --- POPUP AGENT LOOP ---
   const popupTaskForm = $('#popupTaskForm');
   const popupTaskInput = $('#popupTaskInput');
   const popupChatViewport = $('#popupChatViewport');
@@ -404,6 +668,22 @@ document.addEventListener('DOMContentLoaded', () => {
       console.warn('Fallback DOM fetch', e);
     }
 
+    // Auto-detect missing file input element on active webpage tab
+    const fileInputNode = (domNodes || []).find(n => n.tag === 'input' && n.type === 'file');
+    if (fileInputNode) {
+      const docName = fileInputNode.text || fileInputNode.placeholder || 'Income Certificate';
+      appendPopupMsg('system', `📄 Sahayak Assistant activated for '${docName}'.`);
+      openSahayakPopup(docName, fileInputNode.selector);
+
+      // Trigger webpage popup overlay as well
+      try {
+        await sendTabMessage(activeTab, { type: 'SAHAYAK_TRIGGER' });
+      } catch (e) {}
+
+      return;
+    }
+
+
     const payload = {
       task_id: popupTaskId,
       goal: popupGoal,
@@ -455,7 +735,6 @@ document.addEventListener('DOMContentLoaded', () => {
       appendPopupMsg('system', `🌐 Navigating tab to: ${stepRes.action.url}`);
       await chrome.tabs.update(tabId, { url: stepRes.action.url });
       popupStepCount++;
-      // Give page 3 seconds to load before next DOM step
       setTimeout(() => {
         runNextPopupAgentStep();
       }, 3000);
@@ -473,7 +752,6 @@ document.addEventListener('DOMContentLoaded', () => {
       runNextPopupAgentStep();
     }, 1500);
   }
-
 
   if (popupBtnApproveHitl) {
     popupBtnApproveHitl.onclick = async () => {
@@ -506,7 +784,5 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
 
-  // Initial load checks
   checkHealth().then(() => runScan().catch(() => {}));
 });
-
