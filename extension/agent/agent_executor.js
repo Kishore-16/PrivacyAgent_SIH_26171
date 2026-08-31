@@ -135,14 +135,6 @@ window.PrivacyAgentExecutor = (() => {
 
       if (type === 'CLICK' || type === 'CLICK_AND_WAIT') {
         if (!targetEl) return { ok: false, error: `Element not found: ${targetId || selector}` };
-        
-        // Sahayak Hook: If targeting a file input that has no file attached, open Sahayak Assistant
-        if (targetEl.tagName.toLowerCase() === 'input' && targetEl.type === 'file' && (!targetEl.files || targetEl.files.length === 0)) {
-          if (window.SahayakDetector) {
-            window.SahayakDetector.handleMissingDocument(targetEl);
-            return { ok: true, detail: 'Sahayak Smart Document Helper opened for missing file input' };
-          }
-        }
 
         targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         targetEl.focus();

@@ -147,10 +147,13 @@ def call_openrouter_api(prompt: str, api_key: str, model_name: str = "openrouter
     }
 
     models_to_try = [
-        "black-forest-labs/flux.2-flex",
-        "dots-studio/dots-3-note-preview:free",
-        # "google/gemma-4-31b-it:free",
-        # "openrouter/free"
+        "google/gemma-4-31b-it:free",
+        "nvidia/nemotron-3.5-lightning:free",
+        "liquid/lfm-2.5-2.6b:free",
+        "google/gemma-4-26b-a4b-it:free",
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "thinkingmachines/inkling-small:free",
+        "minimax/minimax-m3:free",
     ]
 
     for m in models_to_try:
@@ -188,6 +191,59 @@ def call_openrouter_api(prompt: str, api_key: str, model_name: str = "openrouter
                             return content
         except Exception as err:
             logger.warning(f"OpenRouter API attempt with model '{m}' failed: {err}")
+
+    return None
+
+
+def call_agent_chat(system_prompt: str, user_prompt: str, api_key: str) -> Optional[str]:
+    """General-purpose LLM chat call for the autonomous agent. Uses a custom system prompt."""
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://127.0.0.1:8000",
+        "X-Title": "PrivacyAgent Autonomous Assistant"
+    }
+
+    models_to_try = [
+        "google/gemma-4-31b-it:free",
+        "nvidia/nemotron-3.5-lightning:free",
+        "liquid/lfm-2.5-2.6b:free",
+        "google/gemma-4-26b-a4b-it:free",
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "thinkingmachines/inkling-small:free",
+        "minimax/minimax-m3:free",
+    ]
+
+    for m in models_to_try:
+        payload = {
+            "model": m,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": 0.3
+        }
+
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode('utf-8'),
+                headers=headers,
+                method='POST'
+            )
+            with urllib.request.urlopen(req, timeout=20) as response:
+                if response.status == 200:
+                    resp_body = response.read().decode('utf-8')
+                    resp_json = json.loads(resp_body)
+                    choices = resp_json.get("choices", [])
+                    if choices and "message" in choices[0]:
+                        content = choices[0]["message"].get("content", "")
+                        if content:
+                            logger.info(f"Agent chat LLM responded using model: {m}")
+                            return content
+        except Exception as err:
+            logger.warning(f"Agent chat attempt with model '{m}' failed: {err}")
 
     return None
 

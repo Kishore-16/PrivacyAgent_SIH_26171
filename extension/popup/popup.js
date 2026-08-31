@@ -698,19 +698,22 @@ document.addEventListener('DOMContentLoaded', () => {
       console.warn('Fallback DOM fetch', e);
     }
 
-    // Auto-detect missing file input element on active webpage tab
-    const fileInputNode = (domNodes || []).find(n => n.tag === 'input' && n.type === 'file');
-    if (fileInputNode) {
-      const docName = fileInputNode.text || fileInputNode.placeholder || 'Income Certificate';
-      appendPopupMsg('system', `📄 Sahayak Assistant activated for '${docName}'.`);
-      openSahayakPopup(docName, fileInputNode.selector);
+    // Auto-detect if user wants to upload a document
+    const isUploadIntent = popupGoal.toLowerCase().includes('upload') || popupGoal.toLowerCase().includes('certificate') || popupGoal.toLowerCase().includes('document');
+    if (isUploadIntent) {
+      const fileInputNode = (domNodes || []).find(n => n.tag === 'input' && n.type === 'file');
+      if (fileInputNode) {
+        const docName = fileInputNode.text || fileInputNode.placeholder || 'Income Certificate';
+        appendPopupMsg('system', `📄 Sahayak Assistant activated for '${docName}'.`);
+        openSahayakPopup(docName, fileInputNode.selector);
 
-      // Trigger webpage popup overlay as well
-      try {
-        await sendTabMessage(activeTab, { type: 'SAHAYAK_TRIGGER' });
-      } catch (e) {}
+        // Trigger webpage popup overlay as well
+        try {
+          await sendTabMessage(activeTab, { type: 'SAHAYAK_TRIGGER' });
+        } catch (e) {}
 
-      return;
+        return;
+      }
     }
 
 
@@ -738,6 +741,13 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const stepRes = await resp.json();
+      
+      // For chat answers, skip the step card — display directly as a message
+      if (stepRes.action?.label === 'Chat Answer') {
+        await executeStepAndAdvance(activeTab.id, stepRes);
+        return;
+      }
+
       appendPopupStepCard(stepRes.thought || 'Next safe step', stepRes.action?.label || stepRes.action?.type || 'NO_ACTION', stepRes.action?.risk || 'low');
 
       if (stepRes.requires_hitl) {
@@ -760,22 +770,34 @@ document.addEventListener('DOMContentLoaded', () => {
       popupTaskId = null;
       return;
     }
+
+    // Chat answer — display cleanly as a message, not a step card
+    if (stepRes.action?.label === 'Chat Answer' && (stepRes.completed || stepRes.action?.type === 'COMPLETE')) {
+      appendPopupMsg('system', stepRes.status_summary);
+      popupTaskId = null;
+      return;
+    }
+
+    // Task complete (non-chat)
     if (stepRes.completed || stepRes.action?.type === 'COMPLETE') {
       appendPopupMsg('system', `🎉 Task Complete! ${stepRes.status_summary}`);
       popupTaskId = null;
       return;
     }
 
+    // Navigate action
     if (stepRes.action?.type === 'NAVIGATE' && stepRes.action.url) {
-      appendPopupMsg('system', `🌐 Navigating tab to: ${stepRes.action.url}`);
+      appendPopupMsg('system', `🌐 Navigating to: ${stepRes.action.url}`);
       await chrome.tabs.update(tabId, { url: stepRes.action.url });
       popupStepCount++;
+      // Wait for page to load before continuing
       setTimeout(() => {
         runNextPopupAgentStep();
-      }, 3000);
+      }, 4000);
       return;
     }
 
+    // Execute other actions (CLICK, TYPE, SCROLL, etc.)
     try {
       await sendTabMessage({ id: tabId }, { type: 'AGENT_EXECUTE_ACTION', action: stepRes.action });
     } catch (e) {
@@ -785,7 +807,7 @@ document.addEventListener('DOMContentLoaded', () => {
     popupStepCount++;
     setTimeout(() => {
       runNextPopupAgentStep();
-    }, 1500);
+    }, 2000);
   }
 
   if (popupBtnApproveHitl) {

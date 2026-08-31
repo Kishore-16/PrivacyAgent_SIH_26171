@@ -55,7 +55,7 @@ def plan_action(context: dict, image: str = None, task: str = None) -> dict:
         user_content = f"Task: {task or 'Analyze the page and determine the next safe action'}\n\nSanitized DOM findings:\n{json.dumps(clean_scan, separators=(',', ':'))}"
         
         payload = {
-            "model": "dots-studio/dots-3-note-preview:free",
+            "model": "google/gemma-4-31b-it:free",
             "messages": [
                 {
                     "role": "system",
