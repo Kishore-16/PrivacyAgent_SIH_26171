@@ -1,0 +1,75 @@
+- generic [ref=f2e1]:
+  - generic [ref=f2e5]:
+    - generic [ref=f2e6]:
+      - link "Skip to Main Content" [ref=f2e8] [cursor=pointer]:
+        - /url: "#"
+      - banner [ref=f2e9]:
+        - button "Click to go to Home page" [ref=f2e13]
+    - main [ref=f2e14]:
+      - main [ref=f2e27]:
+        - generic [ref=f2e30]:
+          - group [ref=f2e34]:
+            - generic [ref=f2e35]:
+              - generic [ref=f2e36]: User ID
+              - textbox "User ID" [active] [ref=f2e37]:
+                - /placeholder: Enter User ID
+            - generic [ref=f2e38]:
+              - generic [ref=f2e39]: Password
+              - generic [ref=f2e40]: 
+              - textbox "Password" [ref=f2e42]:
+                - /placeholder: Enter Password
+            - text: 
+            - generic [ref=f2e43]:
+              - button "Log In" [disabled]
+            - list [ref=f2e45]:
+              - listitem [ref=f2e46]: Forgot Password
+              - listitem [ref=f2e47]: "| Forgot User ID"
+            - link "Get Online Access" [ref=f2e50] [cursor=pointer]:
+              - /url: /registration/self-reg/avc/online_access
+          - generic [ref=f2e53]:
+            - generic [ref=f2e54]: ACTIVE ADVISOR
+            - generic [ref=f2e55]: Streamline practice management. Support your client service efforts. Focus on growing your book of business.
+        - generic [ref=f2e58]:
+          - generic [ref=f2e63]:
+            - heading "New user or haven't logged in for a while?" [level=2] [ref=f2e64]
+            - paragraph [ref=f2e65]:
+              - text: Financial advisors may self-register via
+              - link "Get Online Access" [ref=f2e66] [cursor=pointer]:
+                - /url: /registration/self-reg/avc/online_access
+              - text: . All others must send a letter of authorization on company letterhead, signed by a principal, to
+              - link "activeadvisor@bnymellon.com" [ref=f2e67] [cursor=pointer]:
+                - /url: mailto:activeadvisor@bnymellon.com
+              - text: .
+            - paragraph [ref=f2e68]: Need additional help or have questions?
+            - paragraph [ref=f2e69]: Call us at 1-877-546-5412, Monday-Friday from 8:30 a.m. - 5:00 p.m. ET
+          - generic [ref=f2e72]:
+            - heading "Active User?" [level=2] [ref=f2e73]
+            - generic [ref=f2e74]: Active users can log in with their existing AdvisorCentral credentials.
+    - contentinfo [ref=f2e76]:
+      - contentinfo [ref=f2e78]:
+        - list [ref=f2e83]:
+          - listitem [ref=f2e84]:
+            - link "Privacy Statement" [ref=f2e85] [cursor=pointer]:
+              - /url: https://www.bnymellon.com/us/en/privacy-policy.html
+          - listitem [ref=f2e86]:
+            - text: "|"
+            - link "Cookie Notice" [ref=f2e87] [cursor=pointer]:
+              - /url: /app/avc/cookiePolicy
+          - listitem [ref=f2e88]:
+            - text: "|"
+            - link "Terms of Use" [ref=f2e89] [cursor=pointer]:
+              - /url: https://www.bnymellon.com/us/en/terms-of-use.html
+          - listitem [ref=f2e90]:
+            - text: "|"
+            - link "System Requirements" [ref=f2e91] [cursor=pointer]:
+              - /url: /app/avc/systemRequirements
+  - region "Cookie banner" [ref=f2e94]:
+    - dialog "Your Privacy" [ref=f2e95]:
+      - generic [ref=f2e99]:
+        - heading "Your Privacy" [level=2] [ref=f2e100]
+        - generic [ref=f2e101]:
+          - text: We use cookies to improve your experience on our websites. By continuing you are giving consent to cookies being used.
+          - link "More information about your privacy, opens in a new tab" [ref=f2e102] [cursor=pointer]:
+            - /url: /app/cookiePolicy
+            - text: Cookie Notice
+      - button "Close" [ref=f2e104] [cursor=pointer]

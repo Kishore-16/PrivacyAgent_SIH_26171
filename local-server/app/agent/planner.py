@@ -72,7 +72,7 @@ def plan_next_agent_step(req: AgentStepRequest) -> AgentStepResponse:
             )
 
         # Step B: If search input exists and we haven't submitted yet (or not on Google search results), type query
-        if search_input and (step_num == 1 or not is_google_search_page):
+        if search_input and step_num == 1:
             action = ActionModel(
                 type="TYPE_AND_ENTER",
                 target_id=search_input.get("agentId"),

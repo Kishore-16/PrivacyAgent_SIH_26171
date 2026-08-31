@@ -205,7 +205,7 @@
   document.addEventListener('click', (e) => {
     const target = e.target;
     // If they clicked a submit button or something inside a submit button
-    if (target && (target.type === 'submit' || target.closest('button[type="submit"]', 'input[type="submit"]'))) {
+    if (target && (target.type === 'submit' || target.closest('button[type="submit"], input[type="submit"]'))) {
       captureFormData();
     }
   }, true);

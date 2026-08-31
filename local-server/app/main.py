@@ -39,6 +39,8 @@ class VisionRequest(BaseModel):
 
 class PlanRequest(BaseModel):
     context: Dict[str, Any]
+    image: Optional[str] = None
+    task: Optional[str] = None
 
 @app.get("/health")
 def get_health():
@@ -74,7 +76,7 @@ def planner_endpoint(req: PlanRequest):
     if contains_unsafe_payload(context):
         raise HTTPException(status_code=400, detail="Planner input rejected: raw sensitive data detected")
 
-    res = plan_action(context)
+    res = plan_action(context, req.image, req.task)
     log_safe_audit("PLAN_ACTION", {
         "action_type": res.get("action", {}).get("type") if res.get("ok") else "ERROR",
         "risk_level": res.get("action", {}).get("risk") if res.get("ok") else "NONE"

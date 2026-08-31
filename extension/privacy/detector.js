@@ -22,10 +22,10 @@ class DOMPrivacyDetector {
       if (type === 'password' || /password|passcode|otp/.test(label)) return 'PASSWORD';
       if (type === 'email' || /email|e-mail/.test(label)) return 'EMAIL';
       if (type === 'tel' || /phone|mobile|telephone/.test(label)) return 'PHONE';
-      if (/pan/.test(label)) return 'PAN';
+      if (/(^|\W)pan(\W|$)/.test(label)) return 'PAN';
       if (/aadhaar|aadhar/.test(label)) return 'AADHAAR';
       if (/account|card|credit|debit/.test(label)) return 'CARD';
-      if (/name|first name|last name|full name/.test(label)) return 'NAME';
+      if (/(^|\W)(first|last|full)?\s*name(\W|$)/.test(label)) return 'NAME';
       if (PrivacyPatterns.SENSITIVE_LABELS.test(label)) return 'PII';
     }
     return null;
@@ -72,12 +72,14 @@ class DOMPrivacyDetector {
     while ((node = walker.nextNode()) && count++ < 8000) {
       const text = node.nodeValue || '';
       for (const [kind, re] of Object.entries(PrivacyPatterns)) {
-        if (re instanceof RegExp) {
+        // SENSITIVE_LABELS classifies form controls; it is not a text/PII pattern.
+        if (kind !== 'SENSITIVE_LABELS' && re instanceof RegExp) {
           re.lastIndex = 0;
           if (re.test(text)) {
             findings.push({
               kind,
               selector: this.getSelector(node.parentElement),
+              value: `[${kind}]`,
               source: 'PATTERN'
             });
           }

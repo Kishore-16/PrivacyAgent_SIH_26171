@@ -10,7 +10,7 @@ if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
 # Load .env if present
-env_file = SERVER_DIR.parent / ".env"
+env_file = SERVER_DIR / ".env"
 if env_file.exists():
     load_dotenv(env_file)
 

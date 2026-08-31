@@ -68,7 +68,16 @@ document.addEventListener('DOMContentLoaded', () => {
       console.warn('DOM script missing, injecting...', e);
       await chrome.scripting.executeScript({
         target: { tabId },
-        files: ['agent/agent_executor.js']
+        files: [
+          'privacy/patterns.js',
+          'privacy/detector.js',
+          'privacy/redactor.js',
+          'privacy/firewall.js',
+          'actions/validator.js',
+          'actions/executor.js',
+          'agent/agent_executor.js',
+          'content/content.js'
+        ]
       });
       const res = await chrome.tabs.sendMessage(tabId, { type: 'AGENT_GET_DOM' });
       return res || { ok: false, nodes: [] };
@@ -85,7 +94,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function startAgentTask(goalText) {
-    currentGoal = goalText;
+    currentGoal = RedactionEngine.sanitizeText(goalText);
     stepCounter = 1;
     setStatus('Initializing...', true);
 
@@ -96,7 +105,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const resp = await fetch(`${SERVER_BASE}/task/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task: goalText, url: activeTab?.url })
+        body: JSON.stringify({ task: currentGoal, url: RedactionEngine.sanitizeText(activeTab?.url || '') })
       });
       
       const data = await resp.json();
@@ -117,6 +126,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     setStatus(`Executing Step ${stepCounter}...`, true);
     const activeTab = await getActiveTab();
+    if (!activeTab?.id) {
+      setStatus('Paused (No active tab)');
+      appendMessage('system', '⚠️ No active browser tab is available for the next safe step.');
+      return;
+    }
     const domData = await requestTabDomNodes(activeTab.id);
 
     const stepPayload = {
@@ -124,9 +138,9 @@ document.addEventListener('DOMContentLoaded', () => {
       goal: currentGoal,
       step_number: stepCounter,
       dom_nodes: domData.nodes || [],
-      sanitized_findings: [],
+      sanitized_findings: domData.sanitized_findings || [],
       url: domData.url || activeTab.url,
-      title: domData.title || activeTab.title,
+      title: RedactionEngine.sanitizeText(domData.title || activeTab.title || ''),
       client_attested: true
     };
 
@@ -144,7 +158,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const stepResult = await resp.json();
 
-      appendStepCard(stepResult.thought, stepResult.action.label || stepResult.action.type, stepResult.action.risk);
+      appendStepCard(stepResult.thought || 'Next safe step', stepResult.action?.label || stepResult.action?.type || 'NO_ACTION', stepResult.action?.risk || 'low');
 
       if (stepResult.requires_hitl) {
         pendingStepData = { stepResult, activeTabId: activeTab.id };
@@ -161,14 +175,19 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function performActionAndContinue(tabId, stepResult) {
-    if (stepResult.completed || stepResult.action.type === 'COMPLETE') {
+    if (!stepResult?.action) {
+      setStatus('Paused (Invalid action)');
+      appendMessage('system', '⚠️ The local planner returned no executable action.');
+      return;
+    }
+    if (stepResult.completed || stepResult.action?.type === 'COMPLETE') {
       setStatus('Completed');
       appendMessage('system', `🎉 Task Complete! ${stepResult.status_summary}`);
       currentTaskId = null;
       return;
     }
 
-    if (stepResult.action.type === 'NAVIGATE' && stepResult.action.url) {
+    if (stepResult.action?.type === 'NAVIGATE' && stepResult.action.url) {
       appendMessage('system', `🌐 Navigating tab to: ${stepResult.action.url}`);
       await chrome.tabs.update(tabId, { url: stepResult.action.url });
       stepCounter++;

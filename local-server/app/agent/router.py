@@ -41,14 +41,11 @@ def execute_step(req: AgentStepRequest):
         )
 
     # Privacy verification boundary: Ensure no raw sensitive values escaped content script
-    if req.sanitized_findings:
-        for finding in req.sanitized_findings:
-            val = finding.get("value", "")
-            if val and not (val.startswith("[") and val.endswith("]")):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Agent step rejected by Local Privacy Firewall: Raw unredacted data detected"
-                )
+    if contains_unsafe_payload(req.sanitized_findings):
+        raise HTTPException(
+            status_code=400,
+            detail="Agent step rejected by Local Privacy Firewall: Raw unredacted data detected"
+        )
 
     step_response = plan_next_agent_step(req)
     

@@ -197,6 +197,21 @@ document.addEventListener('DOMContentLoaded', () => {
       if (snapshot?.html) {
         $('#dom-preview').textContent = snapshot.html.replace(/></g, '>\n<').slice(0, 1000) + '...';
       }
+
+      // Preview is also the hand-off point for the next-safe-step workflow.
+      // Generate a recommendation from the same sanitized DOM/image pair,
+      // but never execute it from a preview action.
+      const domContext = await sendTabMessage(tab, { type: 'DOM_CONTEXT' });
+      const nextStep = await sendBgMessage({
+        type: 'PLAN',
+        context: domContext.payload,
+        image: sanitized.image,
+        task: 'Analyze the page and determine the next safe action'
+      });
+      if (nextStep?.ok && nextStep.action) {
+        const action = nextStep.action;
+        $('#decision-out').textContent = `Sanitized view ready.\nNext safe action: ${action.type} — ${action.label || 'No label'}\nRisk: ${(action.risk || 'low').toUpperCase()}\nReason: ${action.reason || 'Local safety planner recommendation'}`;
+      }
     } catch (err) {
       $('#decision-out').textContent = `Preview Error: ${err.message}`;
     }
@@ -207,12 +222,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $('#btn-plan').onclick = async () => {
     try {
+      $('#decision-out').textContent = 'Generating sanitized screenshot and fetching DOM context...';
       const tab = await getActiveTab();
+      
+      // Ensure we have a sanitized screenshot for the AI
+      const sanitized = await createSanitizedScreenshot(tab);
       const domContext = await sendTabMessage(tab, { type: 'DOM_CONTEXT' });
       
+      const userTask = prompt("What is your task for this page? (Leave blank for generic analysis)", "Analyze the page and determine the next safe action");
+      
+      $('#decision-out').textContent = 'Requesting safe action from AI planner...';
       const planRes = await sendBgMessage({
         type: 'PLAN',
-        context: domContext.payload
+        context: domContext.payload,
+        image: sanitized.image,
+        task: userTask || 'Analyze the page and determine the next safe action'
       });
 
       if (!planRes.ok) {
@@ -370,7 +394,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function startPopupAgentTask(goalText) {
-    popupGoal = goalText;
+    popupGoal = RedactionEngine.sanitizeText(goalText);
     popupStepCount = 1;
     appendPopupMsg('user', goalText);
 
@@ -379,7 +403,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const resp = await fetch(`${SERVER_AGENT_BASE}/task/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task: goalText, url: activeTab?.url })
+        body: JSON.stringify({ task: popupGoal, url: RedactionEngine.sanitizeText(activeTab?.url || '') })
       });
       const data = await resp.json();
       if (!data.ok) throw new Error(data.detail || 'Failed to start agent task');
@@ -396,9 +420,15 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!popupTaskId) return;
 
     const activeTab = await getActiveTab();
+    if (!activeTab?.id) {
+      appendPopupMsg('system', '⚠️ No active browser tab is available for the next safe step.');
+      popupTaskId = null;
+      return;
+    }
     let domNodes = [];
+    let domRes = null;
     try {
-      const domRes = await sendTabMessage(activeTab, { type: 'AGENT_GET_DOM' });
+      domRes = await sendTabMessage(activeTab, { type: 'AGENT_GET_DOM' });
       domNodes = domRes?.nodes || [];
     } catch (e) {
       console.warn('Fallback DOM fetch', e);
@@ -409,9 +439,9 @@ document.addEventListener('DOMContentLoaded', () => {
       goal: popupGoal,
       step_number: popupStepCount,
       dom_nodes: domNodes,
-      sanitized_findings: [],
-      url: activeTab?.url,
-      title: activeTab?.title,
+      sanitized_findings: domRes?.sanitized_findings || [],
+      url: RedactionEngine.sanitizeText(activeTab?.url || ''),
+      title: RedactionEngine.sanitizeText(activeTab?.title || ''),
       client_attested: true
     };
 
@@ -428,7 +458,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const stepRes = await resp.json();
-      appendPopupStepCard(stepRes.thought, stepRes.action.label || stepRes.action.type, stepRes.action.risk);
+      appendPopupStepCard(stepRes.thought || 'Next safe step', stepRes.action?.label || stepRes.action?.type || 'NO_ACTION', stepRes.action?.risk || 'low');
 
       if (stepRes.requires_hitl) {
         popupPendingStep = { stepRes, tabId: activeTab.id };
@@ -445,13 +475,18 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function executeStepAndAdvance(tabId, stepRes) {
-    if (stepRes.completed || stepRes.action.type === 'COMPLETE') {
+    if (!stepRes?.action) {
+      appendPopupMsg('system', '⚠️ The local planner returned no executable action.');
+      popupTaskId = null;
+      return;
+    }
+    if (stepRes.completed || stepRes.action?.type === 'COMPLETE') {
       appendPopupMsg('system', `🎉 Task Complete! ${stepRes.status_summary}`);
       popupTaskId = null;
       return;
     }
 
-    if (stepRes.action.type === 'NAVIGATE' && stepRes.action.url) {
+    if (stepRes.action?.type === 'NAVIGATE' && stepRes.action.url) {
       appendPopupMsg('system', `🌐 Navigating tab to: ${stepRes.action.url}`);
       await chrome.tabs.update(tabId, { url: stepRes.action.url });
       popupStepCount++;

@@ -2,7 +2,7 @@ const SERVER_BASE = 'http://127.0.0.1:8000';
 
 async function fetchLocalServer(path, options = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12000);
+  const timer = setTimeout(() => controller.abort(), 60000);
   try {
     const res = await fetch(`${SERVER_BASE}${path}`, {
       ...options,
@@ -48,13 +48,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const sanitizedContext = msg.context || {};
       return await fetchLocalServer('/plan', {
         method: 'POST',
-        body: JSON.stringify({ context: sanitizedContext })
+        body: JSON.stringify({
+          context: sanitizedContext,
+          image: msg.image,
+          task: msg.task
+        })
       });
     }
 
     if (msg.type === 'EXECUTE_ACTION') {
       const action = msg.action || {};
-      const allowed = ['CLICK', 'SCROLL', 'HIGHLIGHT', 'TYPE'];
+      const allowed = ['CLICK', 'SCROLL', 'HIGHLIGHT', 'TYPE', 'LOCAL_AUTOFILL', 'NAVIGATE', 'COMPLETE', 'NO_ACTION'];
       
       if (!allowed.includes(action.type)) {
         return { ok: false, error: 'Action not allow-listed' };
@@ -64,8 +68,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return { ok: false, requiresConfirmation: true };
       }
 
+      const messageType = ['LOCAL_AUTOFILL', 'NAVIGATE', 'COMPLETE'].includes(action.type)
+        ? 'AGENT_EXECUTE_ACTION'
+        : 'EXECUTE_ACTION';
       return await chrome.tabs.sendMessage(msg.tabId, {
-        type: 'EXECUTE_ACTION',
+        type: messageType,
         action
       });
     }

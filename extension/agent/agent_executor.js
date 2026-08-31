@@ -5,6 +5,11 @@
 window.PrivacyAgentExecutor = (() => {
   let agentNodeCounter = 0;
 
+  function safeNodeText(el, value) {
+    const kind = DOMPrivacyDetector.isSensitiveElement(el);
+    return kind ? `[${kind}]` : RedactionEngine.sanitizeText(value || '');
+  }
+
   function tagInteractiveElements() {
     const nodes = [];
     const elements = document.querySelectorAll('button, a, input, select, textarea, [role="button"], [contenteditable="true"]');
@@ -24,9 +29,9 @@ window.PrivacyAgentExecutor = (() => {
           agentId: agentId,
           tag: el.tagName.toLowerCase(),
           type: el.type || null,
-          text: (el.innerText || el.value || el.getAttribute('aria-label') || el.placeholder || '').trim().slice(0, 100),
-          placeholder: el.placeholder || '',
-          ariaLabel: el.getAttribute('aria-label') || '',
+          text: safeNodeText(el, (el.innerText || el.value || el.getAttribute('aria-label') || el.placeholder || '').trim()).slice(0, 100),
+          placeholder: safeNodeText(el, el.placeholder || ''),
+          ariaLabel: safeNodeText(el, el.getAttribute('aria-label') || ''),
           selector: getSimpleCssSelector(el),
           rect: {
             x: Math.round(rect.left),
@@ -49,6 +54,24 @@ window.PrivacyAgentExecutor = (() => {
     return el.tagName.toLowerCase();
   }
 
+  function setElementValue(el, value) {
+    if (el.isContentEditable) {
+      el.textContent = value;
+    } else if (el.tagName.toLowerCase() === 'select') {
+      const option = [...el.options].find(o => o.value === value || o.textContent.trim() === value);
+      if (!option) return false;
+      el.value = option.value;
+    } else {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      if (setter) setter.call(el, value);
+      else el.value = value;
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+
   function executeAction(action) {
     if (!action) return { ok: false, error: 'No action provided' };
 
@@ -59,10 +82,41 @@ window.PrivacyAgentExecutor = (() => {
 
     let targetEl = null;
     if (targetId) {
-      targetEl = document.querySelector(`[data-agent-id="${targetId}"]`);
+      try { targetEl = document.querySelector(`[data-agent-id="${targetId}"]`); } catch(e) {}
     }
     if (!targetEl && selector) {
-      targetEl = document.querySelector(selector);
+      try {
+        targetEl = document.querySelector(selector);
+      } catch (err) {
+        console.warn('Invalid selector provided by AI:', selector);
+      }
+    }
+    
+    // Fallback: if we still don't have targetEl, try to extract text and search the DOM
+    if (!targetEl && selector) {
+       let textMatch = selector;
+       
+       // Try to extract text from :contains('foo'), text='foo', or xpath text()='foo'
+       const quoteMatch = selector.match(/['"](.*?)['"]/);
+       if (quoteMatch && quoteMatch[1]) {
+           textMatch = quoteMatch[1];
+       } else {
+           // Fallback for unquoted text=Login
+           textMatch = selector.replace(/^text=/, '');
+       }
+       
+       textMatch = textMatch.trim().toLowerCase();
+       
+       if (textMatch) {
+           const allNodes = Array.from(document.querySelectorAll('button, a, input, [role="button"]'));
+           for (const el of allNodes) {
+               const elText = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '').toLowerCase();
+               if (elText.includes(textMatch)) {
+                   targetEl = el;
+                   break;
+               }
+           }
+       }
     }
 
     try {
@@ -85,9 +139,7 @@ window.PrivacyAgentExecutor = (() => {
 
         targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         targetEl.focus();
-        targetEl.value = value || '';
-        targetEl.dispatchEvent(new Event('input', { bubbles: true }));
-        targetEl.dispatchEvent(new Event('change', { bubbles: true }));
+        setElementValue(targetEl, value || '');
 
         if (type === 'TYPE_AND_ENTER') {
           const enterEvent = new KeyboardEvent('keydown', {
@@ -115,10 +167,8 @@ window.PrivacyAgentExecutor = (() => {
         if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
           chrome.storage.local.get(['secureProfile'], (res) => {
             const profile = res.secureProfile || {};
-            const filledVal = profile[value] || profile['EMAIL'] || profile['PHONE'] || 'LocalUserValue';
-            targetEl.value = filledVal;
-            targetEl.dispatchEvent(new Event('input', { bubbles: true }));
-            targetEl.dispatchEvent(new Event('change', { bubbles: true }));
+            const filledVal = profile[value];
+            if (filledVal !== undefined) setElementValue(targetEl, filledVal);
           });
           return { ok: true, detail: `Injected field '${value}' from encrypted local vault` };
         }
@@ -144,7 +194,8 @@ window.PrivacyAgentExecutor = (() => {
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.type === 'AGENT_GET_DOM') {
         const nodes = tagInteractiveElements();
-        sendResponse({ ok: true, nodes, url: location.href, title: document.title });
+        sendResponse({ ok: true, nodes, url: location.href, title: document.title,
+          sanitized_findings: DOMPrivacyDetector.scanPage().findings });
       } else if (msg.type === 'AGENT_EXECUTE_ACTION') {
         const res = executeAction(msg.action);
         sendResponse(res);
