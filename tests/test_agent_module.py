@@ -62,11 +62,13 @@ class TestAgentModule(unittest.TestCase):
             task_id="task-3",
             goal="Find Nitro V15 laptop at lowest price",
             step_number=1,
+            url="http://amazon.in/search",
             dom_nodes=[
                 {"agentId": "node-1", "tag": "input", "type": "text", "placeholder": "Search items", "selector": "#search"}
             ],
             client_attested=True
         )
+
         res = plan_next_agent_step(req)
         self.assertEqual(res.action.type, "TYPE_AND_ENTER")
         self.assertEqual(res.action.target_id, "node-1")

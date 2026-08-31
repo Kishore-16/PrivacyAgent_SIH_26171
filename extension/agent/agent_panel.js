@@ -168,6 +168,16 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    if (stepResult.action.type === 'NAVIGATE' && stepResult.action.url) {
+      appendMessage('system', `🌐 Navigating tab to: ${stepResult.action.url}`);
+      await chrome.tabs.update(tabId, { url: stepResult.action.url });
+      stepCounter++;
+      setTimeout(() => {
+        runNextStep();
+      }, 3000);
+      return;
+    }
+
     const execRes = await executeTabAction(tabId, stepResult.action);
     if (!execRes.ok) {
       appendMessage('system', `⚠️ Local Action Notice: ${execRes.error || 'Action delayed'}`);
@@ -178,6 +188,7 @@ document.addEventListener('DOMContentLoaded', () => {
       runNextStep();
     }, 1500);
   }
+
 
   function showHitlModal(reason, promptText) {
     setStatus('Awaiting Approval', true);

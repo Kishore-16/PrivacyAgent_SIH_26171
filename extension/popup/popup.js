@@ -12,15 +12,15 @@ document.addEventListener('DOMContentLoaded', () => {
   async function ensureContentScripts(tab) {
     if (!tab || !tab.id) return;
 
-    // Skip chrome:// and other restricted pages
+    // Internal browser pages cannot receive content script DOM messages directly,
+    // but the tab can still be navigated by the agent.
     const url = tab.url || '';
     if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') ||
         url.startsWith('edge://') || url.startsWith('about:') || url === '') {
-      throw new Error('Cannot scan browser internal pages. Please navigate to a website first.');
+      return;
     }
 
     try {
-      // Try a quick ping to see if content scripts are already loaded
       await new Promise((resolve, reject) => {
         chrome.tabs.sendMessage(tab.id, { type: 'PING' }, response => {
           if (chrome.runtime.lastError) {
@@ -31,7 +31,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       });
     } catch (e) {
-      // Content scripts not loaded — inject them now
       console.log('Content scripts not found, injecting into tab', tab.id);
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
@@ -42,11 +41,13 @@ document.addEventListener('DOMContentLoaded', () => {
           'privacy/firewall.js',
           'actions/validator.js',
           'actions/executor.js',
+          'agent/agent_executor.js',
           'content/content.js'
         ]
       });
     }
   }
+
 
   async function sendTabMessage(tab, msg) {
     await ensureContentScripts(tab);
@@ -450,6 +451,17 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    if (stepRes.action.type === 'NAVIGATE' && stepRes.action.url) {
+      appendPopupMsg('system', `🌐 Navigating tab to: ${stepRes.action.url}`);
+      await chrome.tabs.update(tabId, { url: stepRes.action.url });
+      popupStepCount++;
+      // Give page 3 seconds to load before next DOM step
+      setTimeout(() => {
+        runNextPopupAgentStep();
+      }, 3000);
+      return;
+    }
+
     try {
       await sendTabMessage({ id: tabId }, { type: 'AGENT_EXECUTE_ACTION', action: stepRes.action });
     } catch (e) {
@@ -461,6 +473,7 @@ document.addEventListener('DOMContentLoaded', () => {
       runNextPopupAgentStep();
     }, 1500);
   }
+
 
   if (popupBtnApproveHitl) {
     popupBtnApproveHitl.onclick = async () => {
