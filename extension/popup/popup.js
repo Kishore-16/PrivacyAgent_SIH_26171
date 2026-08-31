@@ -241,6 +241,45 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
+  // 4. Auto-fill Secure Data
+  $('#btn-autofill').onclick = async () => {
+    try {
+      $('#decision-out').textContent = 'Fetching secure data from extension storage...';
+      
+      let profile = null;
+      
+      // Promisify chrome.storage.local.get
+      const stored = await new Promise((resolve) => {
+        chrome.storage.local.get(['secureProfile'], resolve);
+      });
+      
+      if (stored.secureProfile && Object.keys(stored.secureProfile).length > 0) {
+        profile = stored.secureProfile;
+      } else {
+        // Fallback to reading dummy data from local extension package
+        const res = await fetch(chrome.runtime.getURL('profile.json'));
+        profile = await res.json();
+        // Save it to storage for next time
+        chrome.storage.local.set({ secureProfile: profile });
+      }
+      
+      if (!profile) {
+        throw new Error('Failed to load secure profile data');
+      }
+
+      const tab = await getActiveTab();
+      const fillRes = await sendTabMessage(tab, { type: 'AUTOFILL', profile: profile });
+      
+      if (fillRes?.ok) {
+        $('#decision-out').textContent = `Auto-fill Complete: ${fillRes.filledCount} fields populated securely from local storage.`;
+      } else {
+        throw new Error(fillRes?.error || 'Unknown error during autofill');
+      }
+    } catch (err) {
+      $('#decision-out').textContent = `Auto-fill Error: ${err.message}`;
+    }
+  };
+
   // Modal handlers
   $('#btn-confirm-yes').onclick = async () => {
     $('#confirm-modal').style.display = 'none';

@@ -140,12 +140,75 @@
         const res = ActionExecutor.execute(msg.action);
         addAuditRecord('EXECUTE_ACTION', { action: msg.action?.type || 'UNKNOWN' });
         sendResponse(res);
+      } else if (msg.type === 'AUTOFILL') {
+        const profile = msg.profile || {};
+        let filledCount = 0;
+        document.querySelectorAll('input, textarea, select, [contenteditable="true"]').forEach(el => {
+          const kind = DOMPrivacyDetector.isSensitiveElement(el);
+          if (kind && profile[kind]) {
+            el.value = profile[kind];
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            filledCount++;
+          }
+        });
+        addAuditRecord('AUTOFILL', { redactionsApplied: filledCount });
+        sendResponse({ ok: true, filledCount });
       }
     } catch (err) {
       sendResponse({ ok: false, error: err.message });
     }
     return true;
   });
+
+  // Capture form submissions to update the secure profile locally
+  const captureFormData = () => {
+    console.log('[PrivacyAgent] Capturing profile updates...');
+    const profileUpdate = {};
+    let hasData = false;
+    document.querySelectorAll('input, textarea, select').forEach(el => {
+      const kind = DOMPrivacyDetector.isSensitiveElement(el);
+      if (kind && el.value) {
+        profileUpdate[kind] = el.value;
+        hasData = true;
+        console.log(`[PrivacyAgent] Captured ${kind}: ${el.value}`);
+      }
+    });
+
+    if (hasData && typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      try {
+        chrome.storage.local.get(['secureProfile'], (result) => {
+          const currentProfile = result.secureProfile || {};
+          const newProfile = { ...currentProfile, ...profileUpdate };
+          console.log('[PrivacyAgent] Saving new profile to chrome.storage.local:', newProfile);
+          chrome.storage.local.set({ secureProfile: newProfile }, () => {
+            console.log('[PrivacyAgent] Save complete. Error:', chrome.runtime.lastError);
+          });
+          addAuditRecord('PROFILE_UPDATED', { action: 'Saved to Local Extension Storage' });
+        });
+      } catch (err) {
+        if (err.message.includes('Extension context invalidated')) {
+          alert('⚠️ PrivacyAgent Extension was reloaded!\n\nPlease refresh this webpage (F5) so the extension can reconnect and save your data.');
+        } else {
+          console.error('[PrivacyAgent] Storage error:', err);
+        }
+      }
+    } else {
+      console.log('[PrivacyAgent] No data captured or chrome storage unavailable.');
+    }
+  };
+
+  document.addEventListener('submit', (e) => {
+    captureFormData();
+  }, true); // Use capturing phase to ensure we catch it
+
+  document.addEventListener('click', (e) => {
+    const target = e.target;
+    // If they clicked a submit button or something inside a submit button
+    if (target && (target.type === 'submit' || target.closest('button[type="submit"]', 'input[type="submit"]'))) {
+      captureFormData();
+    }
+  }, true);
 
   // Initial scan on document load
   performScan();

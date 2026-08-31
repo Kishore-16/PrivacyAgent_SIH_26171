@@ -16,7 +16,11 @@
   ],
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "PrivacyAgent"
+    "default_title": "PrivacyAgent",
+     "default_icon": {
+       "48": "aizen_48x48.png",
+      "128": "images (1).jpg"
+    }
   },
   "background": {
     "service_worker": "background/background.js"
@@ -37,5 +41,9 @@
       ],
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "icons": {
+    "48": "aizen_48x48.png",
+    "128": "images (1).jpg"
+  }
 }

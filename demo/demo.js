@@ -2,8 +2,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const submitBtn = document.getElementById('submit-btn');
   const payloadBox = document.getElementById('inspector-payload');
 
-  if (submitBtn) {
-    submitBtn.addEventListener('click', (e) => {
+  const form = document.getElementById('banking-form');
+  if (form) {
+    form.addEventListener('submit', (e) => {
       e.preventDefault();
       alert('Demo Application Submitted! Action executed safely via PrivacyAgent.');
     });

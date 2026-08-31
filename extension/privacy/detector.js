@@ -25,6 +25,7 @@ class DOMPrivacyDetector {
       if (/pan/.test(label)) return 'PAN';
       if (/aadhaar|aadhar/.test(label)) return 'AADHAAR';
       if (/account|card|credit|debit/.test(label)) return 'CARD';
+      if (/name|first name|last name|full name/.test(label)) return 'NAME';
       if (PrivacyPatterns.SENSITIVE_LABELS.test(label)) return 'PII';
     }
     return null;
