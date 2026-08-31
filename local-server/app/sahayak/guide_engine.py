@@ -147,8 +147,10 @@ def call_openrouter_api(prompt: str, api_key: str, model_name: str = "openrouter
     }
 
     models_to_try = [
-        "openrouter/auto",
-        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+        "black-forest-labs/flux.2-flex",
+        "dots-studio/dots-3-note-preview:free",
+        # "google/gemma-4-31b-it:free",
+        # "openrouter/free"
     ]
 
     for m in models_to_try:
