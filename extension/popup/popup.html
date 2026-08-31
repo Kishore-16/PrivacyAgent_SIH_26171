@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>PrivacyAgent Dashboard</title>
+  <title>PrivacyAgent — Autonomous Assistant & Dashboard</title>
   <link rel="stylesheet" href="popup.css">
+  <link rel="stylesheet" href="../agent/agent_panel.css">
 </head>
 <body>
   <header>
@@ -13,7 +14,7 @@
       </svg>
       <div>
         <h1>PrivacyAgent</h1>
-        <div class="tagline">Your Screen Never Leaves Your Browser Unprotected</div>
+        <div class="tagline">SIH 26171 • On-Device Privacy Firewall</div>
       </div>
     </div>
     <div class="status-pill">
@@ -22,89 +23,147 @@
     </div>
   </header>
 
-  <!-- Metrics Grid -->
-  <section class="metrics-grid">
-    <div class="metric-card">
-      <val id="m-scanned">0</val>
-      <label>Scanned</label>
-    </div>
-    <div class="metric-card">
-      <val id="m-sensitive">0</val>
-      <label>Sensitive</label>
-    </div>
-    <div class="metric-card">
-      <val id="m-redactions">0</val>
-      <label>Redactions</label>
-    </div>
-  </section>
+  <!-- Top Navigation Tabs -->
+  <nav class="popup-tabs">
+    <button id="tab-btn-agent" class="tab-btn active">🤖 Autonomous Assistant</button>
+    <button id="tab-btn-dashboard" class="tab-btn">🛡️ Privacy Dashboard</button>
+  </nav>
 
-  <!-- Status Info Panel -->
-  <section class="info-panel">
-    <div class="info-row">
-      <span>Local Vision Service</span>
-      <strong id="st-vision">CHECKING...</strong>
-    </div>
-    <div class="info-row">
-      <span>Server Endpoint</span>
-      <strong id="st-server">127.0.0.1:8000</strong>
-    </div>
-    <div class="info-row">
-      <span>Raw PII Transmitted</span>
-      <strong style="color: #10b981;">0 BYTES</strong>
-    </div>
-    <div class="info-row">
-      <span>Local Processing Latency</span>
-      <strong id="st-latency">— ms</strong>
-    </div>
-    <div class="info-row">
-      <span>Current Hostname</span>
-      <strong id="st-host">—</strong>
-    </div>
-  </section>
-
-  <!-- Action Buttons -->
-  <section class="action-buttons">
-    <button id="btn-autofill" class="btn-action btn-secondary">
-      <span>1. Auto-fill Secure Data</span>
-      <small>✍</small>
-    </button>
-    <button id="btn-scan" class="btn-action">
-      <span>2. Scan Page & Detect PII</span>
-      <small>→</small>
-    </button>
-    <button id="btn-preview" class="btn-action btn-secondary">
-      <span>3. Show Sanitized View</span>
-      <small>👁</small>
-    </button>
-    <button id="btn-plan" class="btn-action btn-secondary">
-      <span>4. Get Safe Agent Action</span>
-      <small>⚡</small>
-    </button>
-  </section>
-
-  <!-- Decision Output Box -->
-  <section class="decision-box">
-    <div class="decision-title">Agent Decision Output</div>
-    <pre id="decision-out" class="decision-output">Click "1. Scan Page & Detect PII" to initialize protection.</pre>
-  </section>
-
-  <!-- Preview Container (Hidden by default) -->
-  <section id="preview-section" class="preview-container" style="display: none;">
-    <div class="preview-split">
-      <div class="preview-col">
-        <h4>Sanitized Visual Image</h4>
-        <img id="sanitized-img" class="sanitized-img" alt="Sanitized Preview">
+  <!-- TAB 1: Autonomous Agent Chat Panel (Active by default) -->
+  <main id="tab-view-agent" class="tab-content active">
+    <div class="agent-container" style="height: 380px;">
+      <div class="chat-viewport" id="popupChatViewport">
+        <div class="message system-msg">
+          <div class="msg-avatar">🤖</div>
+          <div class="msg-content">
+            <strong>Autonomous Privacy Assistant</strong>
+            <p>Tell me what to do (e.g. <em>"Find Nitro V15 laptop at lowest price"</em> or <em>"Send deposit money to account"</em>).</p>
+            <span class="privacy-note">🔒 On-device privacy firewall active. Raw data masked locally.</span>
+          </div>
+        </div>
       </div>
-      <div class="preview-col">
-        <h4>Sanitized DOM Snippet</h4>
-        <pre id="dom-preview" style="font-size:0.6rem; max-height:100px; overflow:auto; color:#94a3b8;"></pre>
+
+      <!-- Human-in-The-Loop Approval Modal -->
+      <div class="hitl-overlay hidden" id="popupHitlModal">
+        <div class="hitl-card">
+          <div class="hitl-header">
+            <span class="alert-icon">⚠️</span>
+            <h3>Action Approval Required</h3>
+          </div>
+          <p class="hitl-reason" id="popupHitlReason">High-risk operation detected.</p>
+          <div class="hitl-prompt-box" id="popupHitlPromptText">
+            Confirm executing action?
+          </div>
+          <div class="hitl-actions">
+            <button class="btn btn-secondary" id="popupBtnCancelHitl">Cancel Task</button>
+            <button class="btn btn-primary" id="popupBtnApproveHitl">Approve Action</button>
+          </div>
+        </div>
       </div>
+
+      <footer class="agent-footer">
+        <form id="popupTaskForm" class="task-input-bar">
+          <input 
+            type="text" 
+            id="popupTaskInput" 
+            placeholder="Type task for autonomous agent..." 
+            autocomplete="off" 
+            required 
+          />
+          <button type="submit" id="popupBtnStartTask" class="btn-send">
+            <span>Run</span> 🚀
+          </button>
+        </form>
+      </footer>
     </div>
-  </section>
+  </main>
+
+  <!-- TAB 2: Original Privacy Dashboard & Controls -->
+  <main id="tab-view-dashboard" class="tab-content hidden">
+    <!-- Metrics Grid -->
+    <section class="metrics-grid">
+      <div class="metric-card">
+        <val id="m-scanned">0</val>
+        <label>Scanned</label>
+      </div>
+      <div class="metric-card">
+        <val id="m-sensitive">0</val>
+        <label>Sensitive</label>
+      </div>
+      <div class="metric-card">
+        <val id="m-redactions">0</val>
+        <label>Redactions</label>
+      </div>
+    </section>
+
+    <!-- Status Info Panel -->
+    <section class="info-panel">
+      <div class="info-row">
+        <span>Local Vision Service</span>
+        <strong id="st-vision">CHECKING...</strong>
+      </div>
+      <div class="info-row">
+        <span>Server Endpoint</span>
+        <strong id="st-server">127.0.0.1:8000</strong>
+      </div>
+      <div class="info-row">
+        <span>Raw PII Transmitted</span>
+        <strong style="color: #10b981;">0 BYTES</strong>
+      </div>
+      <div class="info-row">
+        <span>Local Processing Latency</span>
+        <strong id="st-latency">— ms</strong>
+      </div>
+      <div class="info-row">
+        <span>Current Hostname</span>
+        <strong id="st-host">—</strong>
+      </div>
+    </section>
+
+    <!-- Action Buttons -->
+    <section class="action-buttons">
+      <button id="btn-autofill" class="btn-action btn-secondary">
+        <span>1. Auto-fill Secure Data</span>
+        <small>✍</small>
+      </button>
+      <button id="btn-scan" class="btn-action">
+        <span>2. Scan Page & Detect PII</span>
+        <small>→</small>
+      </button>
+      <button id="btn-preview" class="btn-action btn-secondary">
+        <span>3. Show Sanitized View</span>
+        <small>👁</small>
+      </button>
+      <button id="btn-plan" class="btn-action btn-secondary">
+        <span>4. Get Safe Agent Action</span>
+        <small>⚡</small>
+      </button>
+    </section>
+
+    <!-- Decision Output Box -->
+    <section class="decision-box">
+      <div class="decision-title">Agent Decision Output</div>
+      <pre id="decision-out" class="decision-output">Click "2. Scan Page & Detect PII" to initialize protection.</pre>
+    </section>
+
+    <!-- Preview Container (Hidden by default) -->
+    <section id="preview-section" class="preview-container" style="display: none;">
+      <div class="preview-split">
+        <div class="preview-col">
+          <h4>Sanitized Visual Image</h4>
+          <img id="sanitized-img" class="sanitized-img" alt="Sanitized Preview">
+        </div>
+        <div class="preview-col">
+          <h4>Sanitized DOM Snippet</h4>
+          <pre id="dom-preview" style="font-size:0.6rem; max-height:100px; overflow:auto; color:#94a3b8;"></pre>
+        </div>
+      </div>
+    </section>
+  </main>
 
   <footer>
     <span id="footer-status">Ready</span>
-    <span id="external-ai-status">External AI: NOT CONFIGURED (Local Only)</span>
+    <span id="external-ai-status">Local Privacy Firewall Active</span>
   </footer>
 
   <!-- Confirmation Modal Dialog for High-Risk Actions -->

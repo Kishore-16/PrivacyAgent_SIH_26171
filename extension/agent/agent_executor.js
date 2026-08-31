@@ -1,0 +1,160 @@
+/**
+ * PrivacyAgent - Standalone Autonomous Agent Content Script & DOM Executor
+ * Isolated module for DOM Tree extraction, action execution, and local autofill.
+ */
+window.PrivacyAgentExecutor = (() => {
+  let agentNodeCounter = 0;
+
+  function tagInteractiveElements() {
+    const nodes = [];
+    const elements = document.querySelectorAll('button, a, input, select, textarea, [role="button"], [contenteditable="true"]');
+    
+    elements.forEach((el) => {
+      // Assign or retrieve data-agent-id
+      let agentId = el.getAttribute('data-agent-id');
+      if (!agentId) {
+        agentId = `node-${++agentNodeCounter}`;
+        el.setAttribute('data-agent-id', agentId);
+      }
+
+      // Check visibility
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        nodes.push({
+          agentId: agentId,
+          tag: el.tagName.toLowerCase(),
+          type: el.type || null,
+          text: (el.innerText || el.value || el.getAttribute('aria-label') || el.placeholder || '').trim().slice(0, 100),
+          placeholder: el.placeholder || '',
+          ariaLabel: el.getAttribute('aria-label') || '',
+          selector: getSimpleCssSelector(el),
+          rect: {
+            x: Math.round(rect.left),
+            y: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+          }
+        });
+      }
+    });
+
+    return nodes;
+  }
+
+  function getSimpleCssSelector(el) {
+    if (el.id) return `#${CSS.escape(el.id)}`;
+    if (el.name) return `${el.tagName.toLowerCase()}[name="${CSS.escape(el.name)}"]`;
+    const agentId = el.getAttribute('data-agent-id');
+    if (agentId) return `[data-agent-id="${agentId}"]`;
+    return el.tagName.toLowerCase();
+  }
+
+  function executeAction(action) {
+    if (!action) return { ok: false, error: 'No action provided' };
+
+    const type = action.type;
+    const targetId = action.target_id;
+    const selector = action.selector;
+    const value = action.value;
+
+    let targetEl = null;
+    if (targetId) {
+      targetEl = document.querySelector(`[data-agent-id="${targetId}"]`);
+    }
+    if (!targetEl && selector) {
+      targetEl = document.querySelector(selector);
+    }
+
+    try {
+      if (type === 'NAVIGATE' && action.url) {
+        window.location.href = action.url;
+        return { ok: true, detail: `Navigating to ${action.url}` };
+      }
+
+      if (type === 'CLICK' || type === 'CLICK_AND_WAIT') {
+        if (!targetEl) return { ok: false, error: `Element not found: ${targetId || selector}` };
+        
+        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        targetEl.focus();
+        targetEl.click();
+        return { ok: true, detail: `Clicked element ${targetEl.tagName}` };
+      }
+
+      if (type === 'TYPE' || type === 'TYPE_AND_ENTER') {
+        if (!targetEl) return { ok: false, error: `Target element not found for typing` };
+
+        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        targetEl.focus();
+        targetEl.value = value || '';
+        targetEl.dispatchEvent(new Event('input', { bubbles: true }));
+        targetEl.dispatchEvent(new Event('change', { bubbles: true }));
+
+        if (type === 'TYPE_AND_ENTER') {
+          const enterEvent = new KeyboardEvent('keydown', {
+            key: 'Enter',
+            code: 'Enter',
+            keyCode: 13,
+            which: 13,
+            bubbles: true
+          });
+          targetEl.dispatchEvent(enterEvent);
+
+          // If inside a form, attempt submit
+          if (targetEl.form) {
+            targetEl.form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+          }
+        }
+
+        return { ok: true, detail: `Typed '${value}' into ${targetEl.tagName}` };
+      }
+
+      if (type === 'LOCAL_AUTOFILL') {
+        if (!targetEl) return { ok: false, error: 'Target element for autofill not found' };
+
+        // Attempt local retrieval from extension storage
+        if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+          chrome.storage.local.get(['secureProfile'], (res) => {
+            const profile = res.secureProfile || {};
+            const filledVal = profile[value] || profile['EMAIL'] || profile['PHONE'] || 'LocalUserValue';
+            targetEl.value = filledVal;
+            targetEl.dispatchEvent(new Event('input', { bubbles: true }));
+            targetEl.dispatchEvent(new Event('change', { bubbles: true }));
+          });
+          return { ok: true, detail: `Injected field '${value}' from encrypted local vault` };
+        }
+      }
+
+      if (type === 'SCROLL') {
+        window.scrollBy({ top: window.innerHeight * 0.7, behavior: 'smooth' });
+        return { ok: true, detail: 'Scrolled page' };
+      }
+
+      if (type === 'COMPLETE') {
+        return { ok: true, detail: 'Task complete' };
+      }
+
+      return { ok: false, error: `Unknown action type: ${type}` };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  }
+
+  // Listen for agent execution requests
+  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+      if (msg.type === 'AGENT_GET_DOM') {
+        const nodes = tagInteractiveElements();
+        sendResponse({ ok: true, nodes, url: location.href, title: document.title });
+      } else if (msg.type === 'AGENT_EXECUTE_ACTION') {
+        const res = executeAction(msg.action);
+        sendResponse(res);
+      }
+      return true;
+    });
+  }
+
+  return {
+    tagInteractiveElements,
+    executeAction
+  };
+})();

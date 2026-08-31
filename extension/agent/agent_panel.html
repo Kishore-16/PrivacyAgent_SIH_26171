@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PrivacyAgent — Autonomous Assistant</title>
+  <link rel="stylesheet" href="agent_panel.css">
+</head>
+<body>
+  <div class="agent-container">
+    <!-- Header -->
+    <header class="agent-header">
+      <div class="brand">
+        <span class="logo-icon">🛡️</span>
+        <div>
+          <h2>PrivacyAgent Assistant</h2>
+          <span class="sub-badge">SIH 26171 • On-Device Privacy Firewall</span>
+        </div>
+      </div>
+      <div class="status-indicator" id="agentStatus">
+        <span class="status-dot"></span> <span id="statusText">Ready</span>
+      </div>
+    </header>
+
+    <!-- Chat Message List -->
+    <main class="chat-viewport" id="chatViewport">
+      <div class="message system-msg">
+        <div class="msg-avatar">🤖</div>
+        <div class="msg-content">
+          <strong>Hello! I am your Autonomous Privacy Agent.</strong>
+          <p>Tell me what you'd like to do (e.g. <em>"Find Nitro V15 laptop at lowest price"</em> or <em>"Send deposit money to bank account"</em>).</p>
+          <span class="privacy-note">🔒 All prompts are sanitized by local privacy firewall before processing.</span>
+        </div>
+      </div>
+    </main>
+
+    <!-- Human-in-The-Loop Approval Modal -->
+    <div class="hitl-overlay hidden" id="hitlModal">
+      <div class="hitl-card">
+        <div class="hitl-header">
+          <span class="alert-icon">⚠️</span>
+          <h3>Action Approval Required</h3>
+        </div>
+        <p class="hitl-reason" id="hitlReason">High-risk transaction detected.</p>
+        <div class="hitl-prompt-box" id="hitlPromptText">
+          Confirm executing action?
+        </div>
+        <div class="hitl-actions">
+          <button class="btn btn-secondary" id="btnCancelHitl">Cancel Task</button>
+          <button class="btn btn-primary" id="btnApproveHitl">Approve Action</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Input Footer -->
+    <footer class="agent-footer">
+      <form id="agentTaskForm" class="task-input-bar">
+        <input 
+          type="text" 
+          id="taskInput" 
+          placeholder="Give your agent a task..." 
+          autocomplete="off" 
+          required 
+        />
+        <button type="submit" id="btnStartTask" class="btn-send">
+          <span>Execute</span> 🚀
+        </button>
+      </form>
+    </footer>
+  </div>
+
+  <script src="agent_panel.js"></script>
+</body>
+</html>

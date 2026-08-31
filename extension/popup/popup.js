@@ -301,6 +301,199 @@ document.addEventListener('DOMContentLoaded', () => {
     pendingAction = null;
   };
 
+  // Tab Navigation Switching
+  const tabBtnAgent = $('#tab-btn-agent');
+  const tabBtnDashboard = $('#tab-btn-dashboard');
+  const tabViewAgent = $('#tab-view-agent');
+  const tabViewDashboard = $('#tab-view-dashboard');
+
+  if (tabBtnAgent && tabBtnDashboard) {
+    tabBtnAgent.onclick = () => {
+      tabBtnAgent.classList.add('active');
+      tabBtnDashboard.classList.remove('active');
+      tabViewAgent.classList.remove('hidden');
+      tabViewAgent.classList.add('active');
+      tabViewDashboard.classList.add('hidden');
+      tabViewDashboard.classList.remove('active');
+    };
+
+    tabBtnDashboard.onclick = () => {
+      tabBtnDashboard.classList.add('active');
+      tabBtnAgent.classList.remove('active');
+      tabViewDashboard.classList.remove('hidden');
+      tabViewDashboard.classList.add('active');
+      tabViewAgent.classList.add('hidden');
+      tabViewAgent.classList.remove('active');
+    };
+  }
+
+  // Popup Embedded Agent Task Loop
+  const popupTaskForm = $('#popupTaskForm');
+  const popupTaskInput = $('#popupTaskInput');
+  const popupChatViewport = $('#popupChatViewport');
+  const popupHitlModal = $('#popupHitlModal');
+  const popupHitlReason = $('#popupHitlReason');
+  const popupHitlPromptText = $('#popupHitlPromptText');
+  const popupBtnApproveHitl = $('#popupBtnApproveHitl');
+  const popupBtnCancelHitl = $('#popupBtnCancelHitl');
+
+  let popupTaskId = null;
+  let popupGoal = '';
+  let popupStepCount = 1;
+  let popupPendingStep = null;
+  const SERVER_AGENT_BASE = 'http://127.0.0.1:8000/agent';
+
+  function appendPopupMsg(role, text) {
+    if (!popupChatViewport) return;
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `message ${role === 'user' ? 'user-msg' : 'system-msg'}`;
+    const avatar = role === 'user' ? '👤' : '🤖';
+    msgDiv.innerHTML = `
+      <div class="msg-avatar">${avatar}</div>
+      <div class="msg-content"><p>${(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p></div>
+    `;
+    popupChatViewport.appendChild(msgDiv);
+    popupChatViewport.scrollTop = popupChatViewport.scrollHeight;
+  }
+
+  function appendPopupStepCard(thought, actionLabel, risk) {
+    if (!popupChatViewport) return;
+    const card = document.createElement('div');
+    card.className = 'step-card';
+    card.innerHTML = `
+      <div class="step-thought">💡 ${(thought || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+      <div class="step-action">⚡ ${(actionLabel || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')} <span style="font-size:0.65rem;">[${(risk||'').toUpperCase()}]</span></div>
+    `;
+    popupChatViewport.appendChild(card);
+    popupChatViewport.scrollTop = popupChatViewport.scrollHeight;
+  }
+
+  async function startPopupAgentTask(goalText) {
+    popupGoal = goalText;
+    popupStepCount = 1;
+    appendPopupMsg('user', goalText);
+
+    try {
+      const activeTab = await getActiveTab();
+      const resp = await fetch(`${SERVER_AGENT_BASE}/task/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task: goalText, url: activeTab?.url })
+      });
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.detail || 'Failed to start agent task');
+
+      popupTaskId = data.task_id;
+      appendPopupMsg('system', `Agent active (${popupTaskId}). Processing task...`);
+      runNextPopupAgentStep();
+    } catch (err) {
+      appendPopupMsg('system', `❌ Error starting task: ${err.message}`);
+    }
+  }
+
+  async function runNextPopupAgentStep() {
+    if (!popupTaskId) return;
+
+    const activeTab = await getActiveTab();
+    let domNodes = [];
+    try {
+      const domRes = await sendTabMessage(activeTab, { type: 'AGENT_GET_DOM' });
+      domNodes = domRes?.nodes || [];
+    } catch (e) {
+      console.warn('Fallback DOM fetch', e);
+    }
+
+    const payload = {
+      task_id: popupTaskId,
+      goal: popupGoal,
+      step_number: popupStepCount,
+      dom_nodes: domNodes,
+      sanitized_findings: [],
+      url: activeTab?.url,
+      title: activeTab?.title,
+      client_attested: true
+    };
+
+    try {
+      const resp = await fetch(`${SERVER_AGENT_BASE}/task/step`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!resp.ok) {
+        const errJson = await resp.json();
+        throw new Error(errJson.detail || 'Step rejected');
+      }
+
+      const stepRes = await resp.json();
+      appendPopupStepCard(stepRes.thought, stepRes.action.label || stepRes.action.type, stepRes.action.risk);
+
+      if (stepRes.requires_hitl) {
+        popupPendingStep = { stepRes, tabId: activeTab.id };
+        if (popupHitlReason) popupHitlReason.textContent = stepRes.action.reason;
+        if (popupHitlPromptText) popupHitlPromptText.textContent = stepRes.hitl_prompt || stepRes.action.label;
+        if (popupHitlModal) popupHitlModal.classList.remove('hidden');
+        return;
+      }
+
+      await executeStepAndAdvance(activeTab.id, stepRes);
+    } catch (err) {
+      appendPopupMsg('system', `⚠️ Step Error: ${err.message}`);
+    }
+  }
+
+  async function executeStepAndAdvance(tabId, stepRes) {
+    if (stepRes.completed || stepRes.action.type === 'COMPLETE') {
+      appendPopupMsg('system', `🎉 Task Complete! ${stepRes.status_summary}`);
+      popupTaskId = null;
+      return;
+    }
+
+    try {
+      await sendTabMessage({ id: tabId }, { type: 'AGENT_EXECUTE_ACTION', action: stepRes.action });
+    } catch (e) {
+      console.warn('Action execute notice', e);
+    }
+
+    popupStepCount++;
+    setTimeout(() => {
+      runNextPopupAgentStep();
+    }, 1500);
+  }
+
+  if (popupBtnApproveHitl) {
+    popupBtnApproveHitl.onclick = async () => {
+      if (popupHitlModal) popupHitlModal.classList.add('hidden');
+      if (popupPendingStep) {
+        const { tabId, stepRes } = popupPendingStep;
+        popupPendingStep = null;
+        appendPopupMsg('system', '✅ High-risk action approved by user. Executing...');
+        await executeStepAndAdvance(tabId, stepRes);
+      }
+    };
+  }
+
+  if (popupBtnCancelHitl) {
+    popupBtnCancelHitl.onclick = () => {
+      if (popupHitlModal) popupHitlModal.classList.add('hidden');
+      popupPendingStep = null;
+      popupTaskId = null;
+      appendPopupMsg('system', '🚫 Task cancelled by user.');
+    };
+  }
+
+  if (popupTaskForm) {
+    popupTaskForm.onsubmit = (e) => {
+      e.preventDefault();
+      const val = popupTaskInput.value.trim();
+      if (!val) return;
+      popupTaskInput.value = '';
+      startPopupAgentTask(val);
+    };
+  }
+
   // Initial load checks
   checkHealth().then(() => runScan().catch(() => {}));
 });
+

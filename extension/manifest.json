@@ -7,13 +7,17 @@
     "activeTab",
     "scripting",
     "storage",
-    "tabs"
+    "tabs",
+    "sidePanel"
   ],
   "host_permissions": [
     "<all_urls>",
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*"
   ],
+  "side_panel": {
+    "default_path": "agent/agent_panel.html"
+  },
   "action": {
     "default_popup": "popup/popup.html",
     "default_title": "PrivacyAgent",
@@ -37,6 +41,7 @@
         "privacy/firewall.js",
         "actions/validator.js",
         "actions/executor.js",
+        "agent/agent_executor.js",
         "content/content.js"
       ],
       "run_at": "document_idle"

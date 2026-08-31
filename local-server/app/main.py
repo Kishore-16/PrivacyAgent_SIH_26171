@@ -10,12 +10,17 @@ from typing import Optional, Dict, Any
 from app.vision import analyze_and_redact_screenshot
 from app.planner import plan_action
 from app.firewall import contains_unsafe_payload, log_safe_audit
+from app.agent.router import router as agent_router
 
 app = FastAPI(
     title="PrivacyAgent Local Vision Server",
     description="On-device local vision analysis & privacy agent server for SIH 26171",
     version="2.0.0"
 )
+
+# Include modular agent router cleanly
+app.include_router(agent_router, prefix="/agent", tags=["agent"])
+
 
 # Enable CORS for local extension requests
 app.add_middleware(
