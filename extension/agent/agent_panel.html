@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PrivacyAgent — Autonomous Assistant</title>
   <link rel="stylesheet" href="agent_panel.css">
+  <link rel="stylesheet" href="../sahayak/sahayak_modal.css">
 </head>
 <body>
   <div class="agent-container">
@@ -28,11 +29,117 @@
         <div class="msg-avatar">🤖</div>
         <div class="msg-content">
           <strong>Hello! I am your Autonomous Privacy Agent.</strong>
-          <p>Tell me what you'd like to do (e.g. <em>"Find Nitro V15 laptop at lowest price"</em> or <em>"Send deposit money to bank account"</em>).</p>
+          <p>Tell me what you'd like to do (e.g. <em>"Fill scholarship form"</em> or <em>"Send deposit money to bank account"</em>).</p>
           <span class="privacy-note">🔒 All prompts are sanitized by local privacy firewall before processing.</span>
         </div>
       </div>
     </main>
+
+    <!-- Sahayak Smart Document Helper SidePanel Card (Hidden by default, opens when file input encountered) -->
+    <div class="sahayak-sidepanel-card hidden" id="sahayakSidepanelCard">
+      <div class="sahayak-header">
+        <div class="sahayak-title-group">
+          <h2>🛡️ <span id="shkModalTitle">Sahayak Assistant</span></h2>
+          <span class="sahayak-doc-badge" id="shkDocBadge">📄 File Required: Income Certificate</span>
+        </div>
+        <button class="sahayak-close-btn" id="shkCloseBtn">&times;</button>
+      </div>
+
+      <!-- State Selector -->
+      <div class="sahayak-lang-section" style="margin-bottom: 8px;">
+        <div class="sahayak-lang-label" id="shkStateLabel">🏛️ SELECT STATE / JURISDICTION:</div>
+        <select id="shkStateSelect" style="width: 100%; padding: 8px 12px; background: #334155; border: 1px solid #475569; color: #fff; border-radius: 8px; font-weight: 600; font-size: 0.85rem; outline: none; cursor: pointer;">
+          <option value="National">Central Govt / All India</option>
+          <option value="Uttar Pradesh">Uttar Pradesh (उत्तर प्रदेश)</option>
+          <option value="Maharashtra">Maharashtra (महाराष्ट्र)</option>
+          <option value="Delhi">Delhi (दिल्ली)</option>
+          <option value="Tamil Nadu">Tamil Nadu (தமிழ்நாடு)</option>
+          <option value="Karnataka">Karnataka (ಕರ್ನಾಟಕ)</option>
+          <option value="Bihar">Bihar (बिहार)</option>
+          <option value="West Bengal">West Bengal (পশ্চিমবঙ্গ)</option>
+          <option value="Madhya Pradesh">Madhya Pradesh (मध्य प्रदेश)</option>
+          <option value="Gujarat">Gujarat (ગુજરાત)</option>
+          <option value="Rajasthan">Rajasthan (राजस्थान)</option>
+          <option value="Kerala">Kerala (கேரளா / കേരളம்)</option>
+          <option value="Punjab">Punjab (ਪੰਜਾਬ)</option>
+          <option value="Haryana">Haryana (हरियाणा)</option>
+          <option value="Andhra Pradesh">Andhra Pradesh (ఆంధ్రప్రదేశ్)</option>
+        </select>
+      </div>
+
+      <!-- Language Selector (1: EN, 2: HI, 3: TA, 4: TE, 5: BN) -->
+      <div class="sahayak-lang-section">
+        <div class="sahayak-lang-label" id="shkLangLabel">🌐 SELECT LANGUAGE (Press key 1-5):</div>
+        <div class="sahayak-lang-buttons" id="shkLangButtons">
+          <button class="sahayak-lang-btn active" data-lang-key="1">[1] English</button>
+          <button class="sahayak-lang-btn" data-lang-key="2">[2] हिन्दी</button>
+          <button class="sahayak-lang-btn" data-lang-key="3">[3] தமிழ்</button>
+          <button class="sahayak-lang-btn" data-lang-key="4">[4] తెలుగు</button>
+          <button class="sahayak-lang-btn" data-lang-key="5">[5] বাংলা</button>
+        </div>
+      </div>
+
+
+      <!-- About Document & How to Identify Section (English Default) -->
+      <div class="sahayak-info-box">
+        <div class="sahayak-section-header" id="shkAboutTitle">ℹ️ WHAT IS THIS DOCUMENT?</div>
+        <div class="sahayak-doc-title-text" id="shkDocTitle">Income Certificate (आय प्रमाण पत्र)</div>
+        <div class="sahayak-doc-desc" id="shkDocDesc">
+          An official government document certifying your annual household income issued by Revenue Dept / Tehsildar office.
+        </div>
+        <div class="sahayak-identify-box">
+          <strong id="shkIdentifyTitle">🔍 HOW TO IDENTIFY THIS FILE:</strong>
+          <p id="shkIdentifyText">Look for State Emblem at top, Tehsildar signature/stamp at bottom, and a 12-to-16 digit Certificate Number.</p>
+        </div>
+      </div>
+
+      <!-- Drag & Drop Upload Zone -->
+      <div class="sahayak-drop-zone" id="shkDropZone">
+        <span class="sahayak-drop-icon">📁</span>
+        <div class="sahayak-drop-text" id="shkDropText">
+          Drag & Drop File Here or <span class="sahayak-browse-link" id="shkBrowseLink">Browse Computer</span>
+        </div>
+        <div class="sahayak-selected-file" id="shkSelectedFile"></div>
+        <div class="sahayak-privacy-badge" id="shkPrivacyBadge">
+          🔒 Protected by PrivacyAgent On-Device Redaction
+        </div>
+        <input type="file" id="shkFileInput" class="sahayak-file-input" accept="image/*,.pdf,.doc,.docx" />
+      </div>
+
+      <!-- Help Center: Online & Offline Procedures -->
+      <div class="sahayak-instructions">
+        <div class="sahayak-instructions-title" id="shkHelpTitle">💡 HELP CENTER (Don't have this document?)</div>
+        
+        <div class="sahayak-portal-bar">
+          <div class="sahayak-portal-info">
+            <span id="shkPortalPrefix">🔗 Official State Portal:</span> <strong id="shkPortalName">e-District Portal</strong>
+          </div>
+          <a href="https://edistrict.gov.in" target="_blank" rel="noopener noreferrer" class="sahayak-portal-btn" id="shkPortalBtn">
+            Open Portal ↗
+          </a>
+        </div>
+
+        <!-- Online Steps -->
+        <div class="sahayak-proc-section">
+          <div class="sahayak-proc-heading" id="shkOnlineProcTitle">🌐 ONLINE PROCEDURE:</div>
+          <div class="sahayak-steps-list" id="shkOnlineStepsList"></div>
+        </div>
+
+        <!-- Offline State Steps -->
+        <div class="sahayak-proc-section" style="margin-top: 10px;">
+          <div class="sahayak-proc-heading" id="shkOfflineProcTitle">🏛️ OFFLINE STATE PROCEDURE:</div>
+          <div class="sahayak-steps-list" id="shkOfflineStepsList"></div>
+        </div>
+      </div>
+
+      <!-- Footer Actions -->
+      <div class="sahayak-actions">
+        <button class="sahayak-btn-cancel" id="shkCancelBtn">Cancel</button>
+        <button class="sahayak-btn-submit" id="shkSubmitBtn" disabled>
+          Attach File to Form 🚀
+        </button>
+      </div>
+    </div>
 
     <!-- Human-in-The-Loop Approval Modal -->
     <div class="hitl-overlay hidden" id="hitlModal">
@@ -69,6 +176,7 @@
     </footer>
   </div>
 
+  <script src="../sahayak/sahayak_config.js"></script>
   <script src="agent_panel.js"></script>
 </body>
 </html>
