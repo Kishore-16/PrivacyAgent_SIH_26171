@@ -83,9 +83,17 @@
       }
     };
 
-    // Only mask form controls that contain sensitive data
+    // Mask sensitive form controls containing PII
     document.querySelectorAll('input, textarea, select, [contenteditable="true"]').forEach(el => {
       const kind = DOMPrivacyDetector.isSensitiveElement(el);
+      if (kind) {
+        addRect(el.getBoundingClientRect(), kind);
+      }
+    });
+
+    // Only mask image elements if explicitly identified as sensitive PII fields (e.g. profile/ID upload elements)
+    document.querySelectorAll('img[data-privacy-sensitive="true"], input[type="file"] + img, img.user-profile-avatar').forEach(el => {
+      const kind = DOMPrivacyDetector.isSensitiveImageElement(el);
       if (kind) {
         addRect(el.getBoundingClientRect(), kind);
       }

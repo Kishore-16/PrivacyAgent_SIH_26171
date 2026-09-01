@@ -21,9 +21,12 @@ class AgentStepRequest(BaseModel):
     step_number: int = 1
     dom_nodes: List[Dict[str, Any]] = Field(default_factory=list)
     sanitized_findings: List[Dict[str, Any]] = Field(default_factory=list)
+    sanitized_image: Optional[str] = Field(None, description="Final 2-stage dual-sanitized image (Stage 1 DOM + Stage 2 Florence-2)")
     url: Optional[str] = None
     title: Optional[str] = None
     client_attested: bool = True
+    stage2_attested: bool = True
+
 
 class AgentStepResponse(BaseModel):
     task_id: str

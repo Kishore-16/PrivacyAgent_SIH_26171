@@ -12,6 +12,7 @@ from app.planner import plan_action
 from app.firewall import contains_unsafe_payload, log_safe_audit
 from app.agent.router import router as agent_router
 from app.sahayak.router import router as sahayak_router
+from app.florence.router import router as florence_router
 
 app = FastAPI(
     title="PrivacyAgent Local Vision Server",
@@ -19,9 +20,11 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# Include modular agent and sahayak routers cleanly
+# Include modular agent, sahayak, and florence layer-2 routers cleanly
 app.include_router(agent_router, prefix="/agent", tags=["agent"])
 app.include_router(sahayak_router, prefix="/sahayak", tags=["sahayak"])
+app.include_router(florence_router, prefix="/florence", tags=["florence-layer2"])
+
 
 
 # Enable CORS for local extension requests

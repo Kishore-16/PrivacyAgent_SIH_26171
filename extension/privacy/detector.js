@@ -47,19 +47,37 @@ class DOMPrivacyDetector {
     return path.join(' > ') || el.tagName.toLowerCase();
   }
 
+  static isSensitiveImageElement(el) {
+    if (!el || el.nodeType !== 1) return null;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'img' || tag === 'svg' || el.getAttribute('role') === 'img') {
+      const alt = (el.getAttribute('alt') || '').toLowerCase();
+      const title = (el.getAttribute('title') || '').toLowerCase();
+      const id = (el.id || '').toLowerCase();
+      const name = (el.getAttribute('name') || '').toLowerCase();
+      const meta = `${alt} ${title} ${id} ${name}`;
+      
+      if (/aadhaar|aadhar|pan[ _]?card|passport|id[ _]?card|signature|credit[ _]?card|ssn/.test(meta)) {
+        return 'SENSITIVE_DOCUMENT_IMAGE';
+      }
+      if (el.hasAttribute('data-privacy-sensitive') || el.classList.contains('user-profile-avatar')) {
+        return 'PROFILE_IMAGE';
+      }
+    }
+    return null;
+  }
+
   static scanPage() {
     const findings = [];
     const controls = [...document.querySelectorAll('input, textarea, select, [contenteditable="true"]')];
     
-    // 1. Layer 1 — DOM Detection
+    // 1. Layer 1 — DOM Form Control Detection
     controls.forEach(el => {
       const kind = this.isSensitiveElement(el);
       if (kind) {
         findings.push({
           kind,
           selector: this.getSelector(el),
-          // Findings are included in planner context.  Never retain the raw
-          // form value there: the kind is sufficient for redaction/auditing.
           value: `[${kind}]`,
           source: 'DOM'
         });
@@ -84,6 +102,19 @@ class DOMPrivacyDetector {
         }
       }
     }
+
+    // 3. Layer 3 — Sensitive Document & Profile Photo Detection
+    const images = [...document.querySelectorAll('img[data-privacy-sensitive="true"], img.user-profile-avatar, img[alt*="Aadhaar"], img[alt*="PAN"], img[alt*="Passport"]')];
+    images.forEach(el => {
+      const kind = this.isSensitiveImageElement(el);
+      if (kind) {
+        findings.push({
+          kind,
+          selector: this.getSelector(el),
+          source: 'PII_IMAGE'
+        });
+      }
+    });
 
     // Deduplicate findings
     const unique = findings.filter((x, i, arr) => 

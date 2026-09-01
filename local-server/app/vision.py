@@ -121,22 +121,38 @@ def analyze_and_redact_screenshot(image_data: str, redaction_mode: str = "BLUR")
     detections = []
     faces = []
     
-    # 1. OpenCV Haar Cascade Face Detection
+    # 1. OpenCV High-Precision Face Detection
     try:
-        cascade_path = Path(cv2.data.haarcascades) / 'haarcascade_frontalface_default.xml'
-        if cascade_path.exists():
-            detector = cv2.CascadeClassifier(str(cascade_path))
-            detected_faces = detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
-            for (x, y, w, h) in detected_faces:
-                faces.append({'x': int(x), 'y': int(y), 'width': int(w), 'height': int(h), 'confidence': 0.92})
-                detections.append({
-                    'type': 'face',
-                    'x': int(x),
-                    'y': int(y),
-                    'width': int(w),
-                    'height': int(h),
-                    'confidence': 0.92
-                })
+        cascades_dir = Path(__file__).resolve().parent / "cascades"
+        
+        def get_casc(name):
+            p1 = cascades_dir / name
+            if p1.exists():
+                return str(p1)
+            p2 = Path(cv2.data.haarcascades) / name
+            if p2.exists():
+                return str(p2)
+            return None
+
+        c_face = get_casc('haarcascade_frontalface_default.xml')
+        c_prof = get_casc('haarcascade_profileface.xml')
+
+        def add_face(fx, fy, fw, fh, conf=0.95, ftype='face'):
+            if not any(abs(f['x'] - fx) < 20 and abs(f['y'] - fy) < 20 for f in faces):
+                item = {'x': int(fx), 'y': int(fy), 'width': int(fw), 'height': int(fh), 'confidence': conf}
+                faces.append(item)
+                detections.append({'type': ftype, 'x': int(fx), 'y': int(fy), 'width': int(fw), 'height': int(fh), 'confidence': conf})
+
+        if c_face:
+            d_face = cv2.CascadeClassifier(c_face)
+            for (x, y, w, h) in d_face.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)):
+                add_face(x, y, w, h, 0.95, 'face')
+
+        if c_prof:
+            d_prof = cv2.CascadeClassifier(c_prof)
+            for (x, y, w, h) in d_prof.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)):
+                add_face(x, y, w, h, 0.90, 'face')
+
     except Exception as e:
         logger.warning(f"Face detection fallback: {e}")
 

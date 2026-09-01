@@ -39,6 +39,15 @@ class RedactionEngine {
       }
     });
 
+    // Sanitize explicitly sensitive PII image elements (ID document scans, profile photo uploads)
+    clone.querySelectorAll('img[data-privacy-sensitive="true"], img.user-profile-avatar, img[alt*="Aadhaar"], img[alt*="PAN"], img[alt*="Passport"]').forEach(el => {
+      const kind = DOMPrivacyDetector.isSensitiveImageElement(el) || 'REDACTED_IMAGE';
+      el.setAttribute('data-privacy-redacted', 'true');
+      el.setAttribute('src', `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100%" height="100%" fill="%23f0f0f5"/><text x="50%" y="50%" fill="%237c3aed" font-size="12" text-anchor="middle" dy=".3em">[${kind}]</text></svg>`);
+      el.setAttribute('srcset', '');
+      el.setAttribute('alt', `[${kind}]`);
+    });
+
     // Sanitize text nodes
     const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
     let node;
