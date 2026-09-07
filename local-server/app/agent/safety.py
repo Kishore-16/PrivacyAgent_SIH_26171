@@ -25,11 +25,33 @@ def evaluate_action_risk(action_type: str, label: str, value: str, url: str, dom
 
     combined_text = f"{label_lower} {value_lower} {node_text}"
 
-    # Check for High Risk Triggers
     is_high_risk_keyword = any(kw in combined_text for kw in HIGH_RISK_KEYWORDS)
     is_password_field = node_type == "password" or "password" in combined_text
     is_sensitive_url = any(pattern in url_lower for pattern in HIGH_RISK_URL_PATTERNS)
 
+    # --- New action types: always low risk ---
+    if action_type in ("SELECT", "WAIT", "DISMISS_MODAL", "TYPE_AND_SELECT"):
+        return (
+            "low",
+            False,
+            f"Safe {action_type} action — no sensitive data interaction."
+        )
+
+    # CLICK_COORDINATE: medium by default, high on sensitive URLs
+    if action_type == "CLICK_COORDINATE":
+        if is_sensitive_url:
+            return (
+                "high",
+                True,
+                "Coordinate-based click on a banking/payment page requires explicit user confirmation."
+            )
+        return (
+            "medium",
+            False,
+            "Coordinate-based click on a non-sensitive page. Monitoring for safety."
+        )
+
+    # --- Existing risk evaluations ---
     if action_type == "CLICK" and (is_high_risk_keyword or is_password_field):
         return (
             "high",

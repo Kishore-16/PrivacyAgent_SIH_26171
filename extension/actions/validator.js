@@ -1,7 +1,11 @@
 class ActionValidator {
-  static ALLOWED_ACTIONS = new Set(['CLICK', 'SCROLL', 'HIGHLIGHT', 'TYPE']);
+  static ALLOWED_ACTIONS = new Set([
+    'CLICK', 'CLICK_COORDINATE', 'SCROLL', 'HIGHLIGHT', 'TYPE', 'TYPE_AND_ENTER', 'TYPE_AND_SELECT',
+    'SELECT', 'WAIT', 'DISMISS_MODAL',
+    'LOCAL_AUTOFILL', 'NAVIGATE', 'COMPLETE', 'NO_ACTION'
+  ]);
   static DISALLOWED_ACTIONS = new Set(['EXECUTE_JAVASCRIPT', 'RUN_COMMAND', 'NAVIGATE_ANYWHERE', 'DOWNLOAD_FILE']);
-  
+
   static HIGH_RISK_KEYWORDS = ['submit', 'confirm', 'pay', 'delete', 'remove', 'checkout', 'transfer', 'password'];
 
   static validate(action) {
@@ -10,7 +14,7 @@ class ActionValidator {
     }
 
     const type = (action.type || '').toUpperCase();
-    
+
     if (this.DISALLOWED_ACTIONS.has(type)) {
       return { valid: false, error: `Action '${type}' is strictly prohibited by security policy.` };
     }
