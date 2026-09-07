@@ -887,4 +887,41 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   checkHealth().then(() => runScan().catch(() => {}));
+
+  // -----------------------------------------------------------------------
+  // Florence-2 Layer-2 Vision Shield Button (Restored)
+  // -----------------------------------------------------------------------
+  const btnFlorence = document.getElementById('btn-florence-layer2');
+  if (btnFlorence) {
+    btnFlorence.onclick = async () => {
+      try {
+        $('#decision-out').textContent = 'Initializing Layer-2 Vision Shield (onnx-community/Florence-2-base)...';
+        const activeTab = await getActiveTab();
+        if (!activeTab) return;
+
+        const rawImage = await chrome.tabs.captureVisibleTab(activeTab.windowId, { format: 'png' });
+        const resp = await fetch('http://127.0.0.1:8000/florence/analyze-layer2', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image: rawImage,
+            redaction_mode: 'BLUR',
+            client_attestation: true
+          })
+        });
+
+        if (!resp.ok) throw new Error('Florence-2 endpoint returned error');
+        const fRes = await resp.json();
+
+        $('#decision-out').textContent = `🛡️ LAYER-2 FLORENCE-2 VISION SHIELD ACTIVE:\nModel: ${fRes.model_id}\nNon-DOM Canvas/Image Redactions: ${fRes.redactions} region(s) covered with PrivacyAgent placeholders.\nLatency: ${fRes.latency_ms} ms`;
+
+        // Inject sanitized image into preview
+        $('#sanitized-img').src = fRes.sanitized_image || rawImage;
+        $('#preview-section').style.display = 'block';
+      } catch (err) {
+        console.error(err);
+        $('#decision-out').textContent = `⚠️ Florence-2 Engine offline or failed: ${err.message}`;
+      }
+    };
+  }
 });
