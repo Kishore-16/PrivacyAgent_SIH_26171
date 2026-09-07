@@ -25,20 +25,8 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       });
     } catch (e) {
-      console.log('Content scripts not found, injecting into tab', tab.id);
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: [
-          'privacy/patterns.js',
-          'privacy/detector.js',
-          'privacy/redactor.js',
-          'privacy/firewall.js',
-          'actions/validator.js',
-          'actions/executor.js',
-          'agent/agent_executor.js',
-          'content/content.js'
-        ]
-      });
+      console.warn('Content scripts not responding on tab', tab.id);
+      throw new Error("Content script not found. Please refresh the page so PrivacyAgent can attach to it.");
     }
   }
 
@@ -630,16 +618,25 @@ document.addEventListener('DOMContentLoaded', () => {
   let popupGoal = '';
   let popupStepCount = 1;
   let popupPendingStep = null;
+  let popupActionHistory = [];
+  let popupLastActionResult = null;
+  let popupLastPageFingerprint = null;
+  let popupAgentRunning = false;
   const SERVER_AGENT_BASE = 'http://127.0.0.1:8000/agent';
 
   function saveAgentState() {
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       chrome.storage.local.set({
         agentState: {
-          popupTaskId,
-          popupGoal,
-          popupStepCount,
-          chatHtml: popupChatViewport.innerHTML
+           popupTaskId,
+           popupGoal,
+           popupStepCount,
+           // Never persist entered values or DOM text.  The history is solely a
+           // privacy-safe execution trace for loop prevention and recovery.
+           popupActionHistory,
+           popupLastActionResult,
+           popupLastPageFingerprint,
+           chatHtml: popupChatViewport.innerHTML
         }
       });
     }
@@ -652,6 +649,9 @@ document.addEventListener('DOMContentLoaded', () => {
           popupTaskId = res.agentState.popupTaskId;
           popupGoal = res.agentState.popupGoal;
           popupStepCount = res.agentState.popupStepCount || 1;
+          popupActionHistory = Array.isArray(res.agentState.popupActionHistory) ? res.agentState.popupActionHistory : [];
+          popupLastActionResult = res.agentState.popupLastActionResult || null;
+          popupLastPageFingerprint = res.agentState.popupLastPageFingerprint || null;
           popupChatViewport.innerHTML = res.agentState.chatHtml;
           popupChatViewport.scrollTop = popupChatViewport.scrollHeight;
         }
@@ -689,6 +689,9 @@ document.addEventListener('DOMContentLoaded', () => {
   async function startPopupAgentTask(goalText) {
     popupGoal = RedactionEngine.sanitizeText(goalText);
     popupStepCount = 1;
+    popupActionHistory = [];
+    popupLastActionResult = null;
+    popupLastPageFingerprint = null;
     appendPopupMsg('user', goalText);
 
     try {
@@ -711,22 +714,34 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function runNextPopupAgentStep() {
-    if (!popupTaskId) return;
+    if (!popupTaskId || popupAgentRunning) return;
+    popupAgentRunning = true;
 
+    try {
     const activeTab = await getActiveTab();
     if (!activeTab?.id) {
       appendPopupMsg('system', '⚠️ No active browser tab is available for the next safe step.');
       popupTaskId = null;
       return;
     }
-    let domNodes = [];
-    let domRes = null;
-    try {
-      domRes = await sendTabMessage(activeTab, { type: 'AGENT_GET_DOM' });
-      domNodes = domRes?.nodes || [];
-    } catch (e) {
-      console.warn('Fallback DOM fetch', e);
-    }
+      let domNodes = [];
+      let domRes = null;
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          const activeTab = await getActiveTab();
+          domRes = await sendTabMessage(activeTab, { type: 'AGENT_GET_DOM' });
+          if (domRes) {
+            domNodes = domRes.nodes || [];
+            popupLastPageFingerprint = domRes.page_fingerprint || popupLastPageFingerprint;
+            break;
+          }
+        } catch (e) {
+          console.warn(`DOM fetch failed (retries left: ${retries - 1})`, e);
+        }
+        retries--;
+        if (retries > 0) await new Promise(r => setTimeout(r, 1500));
+      }
 
     // Auto-detect if user wants to upload a document
     const isUploadIntent = popupGoal.toLowerCase().includes('upload') || popupGoal.toLowerCase().includes('certificate') || popupGoal.toLowerCase().includes('document');
@@ -755,8 +770,24 @@ document.addEventListener('DOMContentLoaded', () => {
       sanitized_findings: domRes?.sanitized_findings || [],
       url: RedactionEngine.sanitizeText(activeTab?.url || ''),
       title: RedactionEngine.sanitizeText(activeTab?.title || ''),
-      client_attested: true
+      client_attested: true,
+      page_alerts: domRes?.page_alerts || [],
+      visible_text: domRes?.visible_text || '',
+      action_history: popupActionHistory.slice(-12),
+      last_action_result: popupLastActionResult
     };
+
+    // Visual grounding is an explicit recovery tool, not a continuous leak of
+    // page pixels.  It is only supplied after an empty DOM or a failed action,
+    // and uses the extension's redacted screenshot pipeline.
+    if (domNodes.length === 0 || popupLastActionResult === 'no_change' || popupLastActionResult === 'error_detected') {
+      try {
+        const visual = await createSanitizedScreenshot(activeTab);
+        payload.screenshot = visual.image;
+      } catch (e) {
+        console.warn('Redacted visual recovery unavailable', e);
+      }
+    }
 
     try {
       const resp = await fetch(`${SERVER_AGENT_BASE}/task/step`, {
@@ -792,6 +823,39 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (err) {
       appendPopupMsg('system', `⚠️ Step Error: ${err.message}`);
     }
+    } finally {
+      popupAgentRunning = false;
+    }
+  }
+
+  function recordActionOutcome(action, outcome, detail, url) {
+    const actionSummary = {
+      type: action?.type || 'UNKNOWN',
+      label: String(action?.label || action?.type || 'Interaction').slice(0, 100)
+    };
+    popupActionHistory.push({
+      step: popupStepCount,
+      action: actionSummary,
+      result: outcome,
+      detail: String(detail || '').slice(0, 160),
+      url: RedactionEngine.sanitizeText(url || '')
+    });
+    popupActionHistory = popupActionHistory.slice(-20);
+    popupLastActionResult = outcome;
+    saveAgentState();
+  }
+
+  function outcomeFromObservation(action, execution, beforeFingerprint, afterObservation) {
+    if (!execution?.ok) return 'error_detected';
+    const alerts = afterObservation?.page_alerts || [];
+    const hasError = alerts.some((alert) => /error|invalid|required|failed|unable|try again/i.test(alert?.text || ''));
+    if (hasError) return 'error_detected';
+    const afterFingerprint = afterObservation?.page_fingerprint;
+    if (afterFingerprint && beforeFingerprint && afterFingerprint !== beforeFingerprint) return 'success';
+    // Typing can leave a page structurally unchanged; a successful executor
+    // report is enough for the planner to move to the dependent field.
+    if (['TYPE', 'TYPE_AND_SELECT', 'SELECT', 'WAIT', 'SCROLL'].includes(action?.type)) return 'success';
+    return 'no_change';
   }
 
   async function executeStepAndAdvance(tabId, stepRes) {
@@ -819,6 +883,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (stepRes.action?.type === 'NAVIGATE' && stepRes.action.url) {
       appendPopupMsg('system', `🌐 Navigating to: ${stepRes.action.url}`);
       await chrome.tabs.update(tabId, { url: stepRes.action.url });
+      recordActionOutcome(stepRes.action, 'navigation', 'Navigation started', stepRes.action.url);
       popupStepCount++;
       // Wait for page to load before continuing
       setTimeout(() => {
@@ -829,9 +894,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Execute other actions (CLICK, TYPE, SCROLL, etc.)
     try {
-      await sendTabMessage({ id: tabId }, { type: 'AGENT_EXECUTE_ACTION', action: stepRes.action });
-    } catch (e) {
+      const beforeFingerprint = popupLastPageFingerprint;
+      const execution = await sendTabMessage({ id: tabId }, { type: 'AGENT_EXECUTE_ACTION', action: stepRes.action });
+      // The executor waits for DOM mutation quiescence.  Re-observe rather than
+      // assuming a synthetic click worked; this is what enables recovery on
+      // stateful booking widgets and stale elements.
+      const activeTab = await getActiveTab();
+      const observation = activeTab?.id === tabId
+        ? await sendTabMessage(activeTab, { type: 'AGENT_GET_DOM' })
+        : null;
+      popupLastPageFingerprint = observation?.page_fingerprint || execution?.page_fingerprint || popupLastPageFingerprint;
+      const outcome = outcomeFromObservation(stepRes.action, execution, beforeFingerprint, observation);
+      recordActionOutcome(stepRes.action, outcome, execution?.detail || execution?.error, activeTab?.url);
+      if (outcome !== 'success' && outcome !== 'navigation') {
+        appendPopupMsg('system', `↻ Step did not verify (${execution?.error || execution?.detail || 'no visible page change'}). Trying a different safe approach.`);
+      }
+          } catch (e) {
       console.warn('Action execute notice', e);
+      const msg = (e.message || "").toLowerCase();
+      if (msg.includes('closed before a response') || msg.includes('receiving end does not exist') || msg.includes('back/forward cache')) {
+        recordActionOutcome(stepRes.action, 'navigation', 'Page navigated', '');
+      } else {
+        recordActionOutcome(stepRes.action, 'error_detected', e.message, '');
+      }
     }
 
     popupStepCount++;
@@ -857,6 +942,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (popupHitlModal) popupHitlModal.classList.add('hidden');
       popupPendingStep = null;
       popupTaskId = null;
+      popupActionHistory = [];
+      popupLastActionResult = null;
+      popupLastPageFingerprint = null;
       appendPopupMsg('system', '🚫 Task cancelled by user.');
     };
   }
@@ -886,6 +974,11 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
 
+  // loadAgentState(); // Disabled: Start a fresh conversation every time popup opens
+  if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+    chrome.storage.local.remove(['agentState']);
+  }
+  
   checkHealth().then(() => runScan().catch(() => {}));
 
   // -----------------------------------------------------------------------

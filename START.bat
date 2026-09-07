@@ -44,7 +44,7 @@ if %errorlevel% equ 0 (
 
 echo [4/5] Checking server health...
 set HEALTH_OK=0
-for /l %%i in (1,1,15) do (
+for /l %%i in (1,1,45) do (
     curl -s http://127.0.0.1:8000/health | findstr "privacyagent-local-vision" >nul
     if !errorlevel! equ 0 (
         set HEALTH_OK=1

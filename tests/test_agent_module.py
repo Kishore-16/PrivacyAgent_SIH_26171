@@ -74,5 +74,22 @@ class TestAgentModule(unittest.TestCase):
         self.assertEqual(res.action.target_id, "node-1")
         self.assertFalse(res.requires_hitl)
 
+    def test_booking_recovery_uses_autocomplete_for_route(self):
+        req = AgentStepRequest(
+            task_id="task-bus", goal="Book a bus from Chennai to Madurai",
+            step_number=1, url="https://www.tnstc.in/",
+            dom_nodes=[
+                {"agentId": "from", "tag": "input", "placeholder": "From / Origin", "rect": {"x": 10, "y": 10, "width": 180, "height": 40}},
+                {"agentId": "to", "tag": "input", "placeholder": "To / Destination", "rect": {"x": 200, "y": 10, "width": 180, "height": 40}},
+            ], client_attested=True
+        )
+        # Recovery is deliberately deterministic so it remains available while
+        # a model provider is rate-limited or the booking site is loading.
+        from app.agent.planner import _keyword_fallback
+        res = _keyword_fallback(req)
+        self.assertEqual(res.action.type, "TYPE_AND_SELECT")
+        self.assertEqual(res.action.target_id, "from")
+        self.assertEqual(res.action.value, "chennai")
+
 if __name__ == "__main__":
     unittest.main()

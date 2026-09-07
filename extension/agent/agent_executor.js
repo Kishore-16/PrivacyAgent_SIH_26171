@@ -607,7 +607,7 @@ window.PrivacyAgentExecutor = (() => {
 
         const typedText = (action.value || '').toLowerCase();
         // Look for dropdown options
-        const options = Array.from(document.querySelectorAll('[role="option"], [role="listbox"] li, .autocomplete-suggestion, .tt-suggestion, li[role="treeitem"]'));
+        const options = Array.from(document.querySelectorAll('[role="option"], [role="listbox"] > *, .autocomplete-suggestion, .tt-suggestion, li[role="treeitem"], ul[class*="dropdown"] li, ul[class*="menu"] li, div[class*="option"], li[class*="option"], div[class*="item"]'));
         let clicked = false;
         
         // Find best match

@@ -24,3 +24,7 @@ Thumbs.db
 *.log
 scratch/
 PrivacyAgent_SIH_26171.zip
+test_api.py
+test_llm2.py
+test_llm3.py
+test_llm4.py

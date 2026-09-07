@@ -20,9 +20,10 @@ def compress_agent_state(req: AgentStepRequest) -> AgentStepRequest:
             seen_signatures = set()
             
             for node in req.dom_nodes:
-                rect = node.get("rect")
-                if not rect:
-                    continue
+                # Unit/integration clients and accessibility-only pages may not
+                # have pixel bounds.  Retain those controls instead of silently
+                # turning an actionable page into an empty observation.
+                rect = node.get("rect") or {"x": 0, "y": 0, "width": 1, "height": 1}
                     
                 # Drop off-screen or invisible elements (width or height == 0)
                 w = rect.get("width", 0)
@@ -34,9 +35,9 @@ def compress_agent_state(req: AgentStepRequest) -> AgentStepRequest:
                 y = int(rect.get("y", 0))
                 
                 # Deduplication signature: tag + text + type
-                text = node.get("text", "").strip()
-                tag = node.get("tag", "").strip()
-                node_type = node.get("type", "").strip()
+                text = (node.get("text") or "").strip()
+                tag = (node.get("tag") or "").strip()
+                node_type = (node.get("type") or "").strip()
                 
                 signature = f"{tag}|{text}|{node_type}"
                 if signature in seen_signatures and not text:
