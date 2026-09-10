@@ -148,6 +148,7 @@ def call_openrouter_api(prompt: str, api_key: str, model_name: str = "openrouter
 
     models_to_try = [
         "google/gemma-4-31b-it:free",
+        "z-ai/glm-5.2:free",
         "nvidia/nemotron-3.5-lightning:free",
         "liquid/lfm-2.5-2.6b:free",
         "google/gemma-4-26b-a4b-it:free",
@@ -207,6 +208,7 @@ def call_agent_chat(system_prompt: str, user_prompt: str, api_key: str) -> Optio
 
     models_to_try = [
         "google/gemma-4-31b-it:free",
+        "z-ai/glm-5.2:free",
         "nvidia/nemotron-3.5-lightning:free",
         "liquid/lfm-2.5-2.6b:free",
         "google/gemma-4-26b-a4b-it:free",

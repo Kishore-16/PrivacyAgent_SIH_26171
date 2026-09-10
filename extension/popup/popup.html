@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <title>PrivacyAgent — Autonomous Assistant & Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="popup.css">
   <link rel="stylesheet" href="../agent/agent_panel.css">
   <link rel="stylesheet" href="../sahayak/sahayak_modal.css">
@@ -31,9 +34,9 @@
   </nav>
 
   <!-- TAB 1: Autonomous Agent Chat Panel (Active by default) -->
-  <main id="tab-view-agent" class="tab-content active">
-    <div class="agent-container" style="height: 380px;">
-      <div class="chat-viewport" id="popupChatViewport">
+  <main id="tab-view-agent" class="tab-content active" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
+    <div class="agent-container" style="flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0;">
+      <div class="chat-viewport" id="popupChatViewport" style="flex: 1; overflow-y: auto;">
         <div class="message system-msg">
           <div class="msg-avatar">🤖</div>
           <div class="msg-content">
@@ -183,7 +186,7 @@
   </main>
 
   <!-- TAB 2: Original Privacy Dashboard & Controls -->
-  <main id="tab-view-dashboard" class="tab-content hidden">
+  <main id="tab-view-dashboard" class="tab-content hidden" style="overflow-y: auto; padding-bottom: 20px; min-height: 0;">
     <!-- Metrics Grid -->
     <section class="metrics-grid">
       <div class="metric-card">

@@ -6,61 +6,117 @@ from typing import Dict, Any, List, Optional
 from app.agent.schema import AgentStepRequest, AgentStepResponse, ActionModel
 from app.agent.safety import evaluate_action_risk
 from app.sahayak.guide_engine import call_agent_chat, get_openrouter_api_key
+from app.agent.compressor import compress_agent_state
 
 logger = logging.getLogger("AgentPlanner")
 
 # ---------------------------------------------------------------------------
-# LLM System Prompt — Instructs the AI how to behave as an autonomous agent
+# LLM System Prompt — Full Observe-Plan-Act architecture
 # ---------------------------------------------------------------------------
 AGENT_SYSTEM_PROMPT = """\
-You are PrivacyAgent Autonomous Assistant — a smart AI browser agent.
-You receive the user's goal, the current page URL, and a summary of interactive DOM elements on the page.
+You are PrivacyAgent Autonomous Assistant — a smart AI browser agent that operates
+in a continuous Observe-Plan-Act loop.
 
-Your job is to decide the SINGLE next best action. Respond with ONLY a valid JSON object (no markdown, no explanation outside JSON).
+## YOUR CAPABILITIES
+You receive: the user's goal, current page URL, interactive DOM elements with
+bounding-box coordinates, detected page alerts/modals/errors, a history of your
+previous actions and their outcomes, and optionally a redacted screenshot.
 
-## Intent Classification
-First determine the user's intent:
-- "chat": The user is asking a question, making conversation, or requesting information that does NOT require browser interaction. Answer the question directly.
-- "navigate": The user wants to go to a specific website. Extract ONLY the website domain/URL.
-- "search": The user wants to search for something on the web. 
-- "click": Click a specific element on the current page.
-- "type": Type text into a specific input field on the current page.
-- "scroll": Scroll the page to find more content.
-- "complete": The task is done or there's nothing more to do.
+## DECISION PROCESS
+1. OBSERVE: Analyze the DOM elements + alerts + visible text to understand the current page state.
+2. REFLECT: Review your action_history — what have you already done? Did your last
+   action succeed or fail? If it failed (last_action_result = "no_change"), you MUST
+   try a DIFFERENT approach (different element, different action type, scroll first, etc.)
+3. PLAN: Determine the single best next action to advance toward the goal.
 
-## Response Schema
-Return EXACTLY this JSON structure:
+## MULTI-STEP WORKFLOW REASONING
+- Break complex goals into ordered sub-tasks.
+- Track which sub-tasks are complete based on the current URL and page state.
+- If the page shows a form with required fields (dropdowns, inputs), fill them
+  IN ORDER before clicking Submit/Book/Confirm.
+- DO NOT click on navigation tabs or menus (e.g., "Bus Booking", "Home") if the required form fields (like Origin, Destination, Date) are already visible in the DOM. Start typing in them immediately!
+- If a dropdown/select needs to be set, use the SELECT action with the option text as value.
+- Compound Instructions: If the goal has multiple steps (e.g., "go to X, search Y, open Z"),
+  look at the Current Page URL and action_history.
+  - If you have already completed earlier steps, move on to the NEXT incomplete step.
+  - If all steps of the goal are achieved, return intent "complete".
+
+## ERROR & MODAL HANDLING
+- If page_alerts contains active modals, popups, or error messages, ALWAYS handle them FIRST
+  before attempting any other action.
+- Use DISMISS_MODAL to close informational popups, cookie banners, "Please fill the form"
+  errors, or any blocking overlay.
+- After dismissing, re-assess the page state before continuing.
+
+## AUTOCOMPLETE / CUSTOM DROPDOWN HANDLING
+- City pickers, airport selectors, station selectors, and search-as-you-type inputs
+  are NOT native <select> elements. Typing text alone does NOT select the value.
+- For these fields, use the "type_and_select" intent. This will type the text,
+  wait for the dropdown suggestions to appear, and click the matching option.
+- Signs that a field is an autocomplete widget:
+  - It's an <input> next to a [role="listbox"] or [role="combobox"]
+  - The placeholder says "Search", "Select city", "Type to search", etc.
+  - The page is a travel/booking site (bus, train, flight)
+  - It has isAutocomplete=true in the DOM representation
+
+## CANVAS/SVG/VISUAL ELEMENTS
+- For elements that cannot be targeted by CSS selector (seat maps, canvas charts,
+  SVG diagrams, color pickers), use CLICK_COORDINATE with viewport x,y coordinates.
+- Estimate the coordinates from the bounding-box data of nearby labeled elements.
+- Validate that coordinates are within the viewport (0 <= x <= viewportWidth, 0 <= y <= viewportHeight).
+
+## AVAILABLE ACTION TYPES
+- click: Click a DOM element by selector/agent-id
+- click_coordinate: Click at viewport (x,y) for canvas/SVG/visual elements
+- type: Type text into an input field (no Enter key)
+- type_and_enter: Type text and press Enter to submit
+- type_and_select: Type text, wait for autocomplete suggestions, and click the matching option
+- select: Choose an option in a <select> dropdown by option text
+- scroll: Scroll the page up or down
+- navigate: Go to a specific URL
+- search: Build a Google search URL
+- wait: Wait for the page to finish loading/updating
+- dismiss_modal: Close the currently active modal/popup/error dialog
+- local_autofill: Fill a form field from the user's saved profile
+- chat: Answer a conversational question (no browser action needed)
+- complete: The task is finished
+
+## RESPONSE SCHEMA
+Return EXACTLY this JSON structure (no markdown, no explanation outside JSON):
 {
-  "intent": "<chat|navigate|search|click|type|scroll|complete>",
-  "thought": "<brief reasoning about what you're doing>",
-  "url": "<full URL to navigate to, only for navigate/search intent>",
-  "target_selector": "<CSS selector or data-agent-id of the element to interact with, for click/type>",
+  "intent": "<one of the action types above>",
+  "thought": "<your step-by-step reasoning about what you observe and why you chose this action>",
+  "plan_sequence": "<1. Step 1, 2. Step 2, 3. Step 3> (Be specific about the overarching plan and what step you are currently on)",
+  "url": "<full URL, only for navigate/search intent>",
+  "target_selector": "<CSS selector or data-agent-id of the element>",
   "target_label": "<human-readable label of the element>",
-  "type_value": "<text to type, only for type intent>",
-  "chat_answer": "<your answer to the user's question, only for chat intent>",
+  "type_value": "<text to type or option to select>",
+  "x": null,
+  "y": null,
+  "chat_answer": "<your answer, only for chat intent>",
   "risk": "<low|medium|high>",
-  "reason": "<why this action is safe/risky>"
+  "reason": "<safety reasoning>"
 }
 
-## Rules
-- For "navigate": Extract just the website name/URL from the sentence. "go to flipkart" → url: "https://www.flipkart.com". "open youtube" → url: "https://www.youtube.com". Do NOT put the entire sentence as the URL.
-- For "search": Build a Google search URL. "find best phones under 20000" → url: "https://www.google.com/search?q=best+phones+under+20000"
-- For "chat": Provide a helpful, concise answer in chat_answer. Do NOT try to navigate or click anything.
-- For "click": Use the target_selector from the DOM nodes provided. Pick the most relevant element.
-- For "type": Identify the input field and what to type.
-- If the user gives a compound instruction like "go to flipkart and search for phones", handle ONLY the first part (navigate to flipkart). The next step will handle the search.
-- If you see DOM nodes with text like [NAME], [EMAIL], [PASSWORD] — these are REDACTED sensitive fields. Do NOT click or interact with them.
-- If no relevant interactive elements exist on the page, return intent "complete".
-- Never fabricate selectors. Only use selectors from the provided DOM nodes.
+## CRITICAL RULES
+- For "navigate": Extract just the website URL. "go to flipkart" → url: "https://www.flipkart.com".
+  Do NOT put the entire sentence as the URL.
+- For "search": Build a Google search URL from the query.
+- For "chat": Provide a helpful answer in chat_answer. Do NOT try to navigate or click.
+- For "click"/"type"/"select": Use ONLY selectors from the provided DOM nodes. NEVER fabricate selectors.
+- If DOM nodes have text like [NAME], [EMAIL], [PASSWORD] — these are REDACTED sensitive fields.
+  Do NOT click or interact with them.
+- If no relevant interactive elements exist and the goal cannot be advanced, return intent "complete".
+- CRITICAL: Review your action_history. If you have already completed a step (e.g., searching for a movie), DO NOT repeat it. Move to the next logical step. NEVER repeat the exact same action.
+- If you are stuck in a loop and cannot advance, return intent "complete" with thought "Task stuck, stopping."
 """
 
 
-def _summarize_dom_nodes(nodes: List[Dict[str, Any]], max_nodes: int = 30) -> str:
+def _summarize_dom_nodes(nodes: List[Dict[str, Any]], max_nodes: int = 40) -> str:
     """Create a concise text summary of DOM nodes for the LLM prompt."""
     if not nodes:
         return "No interactive elements found on this page."
 
-    # Filter out redacted/noise nodes
     useful = []
     for n in nodes:
         if not isinstance(n, dict):
@@ -79,36 +135,190 @@ def _summarize_dom_nodes(nodes: List[Dict[str, Any]], max_nodes: int = 30) -> st
 
     lines = []
     for n in useful[:max_nodes]:
-        text = n.get("text", "")[:60]
+        text = n.get("text", "")[:80]
         ph = n.get("placeholder", "")[:40]
         aria = n.get("ariaLabel", "")[:40]
         tag = n.get("tag", "?")
         ntype = n.get("type", "")
         aid = n.get("agentId", "")
         sel = n.get("selector", "")
+        rect = n.get("rect", {})
 
         desc = text or ph or aria or f"<{tag}>"
         extra = f" type={ntype}" if ntype else ""
-        lines.append(f"- [{aid}] <{tag}{extra}> \"{desc}\" selector=\"{sel}\"")
+
+        # Include bounding-box coordinates for visual grounding
+        rect_str = ""
+        if rect:
+            rect_str = f" rect=({rect.get('x', '?')},{rect.get('y', '?')},{rect.get('width', '?')},{rect.get('height', '?')})"
+
+        # Include dropdown options if present
+        options_str = ""
+        options = n.get("options", [])
+        if options:
+            opts_preview = ", ".join(str(o)[:30] for o in options[:8])
+            if len(options) > 8:
+                opts_preview += f", ... (+{len(options) - 8} more)"
+            options_str = f" options=[{opts_preview}]"
+
+        selected_str = ""
+        if n.get("selectedOption"):
+            selected_str = f" selected=\"{n['selectedOption'][:30]}\""
+
+        lines.append(f"- [{aid}] <{tag}{extra}> \"{desc}\" selector=\"{sel}\"{rect_str}{options_str}{selected_str}")
 
     return "\n".join(lines)
 
 
-def _call_agent_llm(goal: str, url: str, dom_summary: str, step_number: int) -> Optional[Dict]:
+def _format_action_history(history: List[Dict[str, Any]]) -> str:
+    """Format action history for the LLM prompt, with summarization for older entries."""
+    if not history:
+        return "No previous actions."
+
+    if len(history) <= 5:
+        # All entries fit in detail
+        lines = []
+        for h in history:
+            step = h.get("step", "?")
+            action = h.get("action", {})
+            if isinstance(action, dict):
+                action = action.get("label") or action.get("type") or "Interacted"
+            result = h.get("result", "?")
+            thought = h.get("thought", "")[:60]
+            url = h.get("url", "")[:60]
+            lines.append(f"  Step {step}: {action} → result={result} | {thought} | url={url}")
+        return "\n".join(lines)
+
+    # Summarize older entries, keep last 5 in detail
+    older = history[:-5]
+    recent = history[-5:]
+
+    # Build a compressed summary of older steps
+    summary_parts = []
+    for h in older:
+        action = h.get("action", {})
+        if isinstance(action, dict):
+            label = action.get("label") or action.get("type") or "Interacted"
+        else:
+            label = str(action)
+            
+        result = h.get("result", "")
+        if result == "success":
+            summary_parts.append(f"{label} ✓")
+        elif result == "no_change":
+            summary_parts.append(f"{label} ✗")
+        else:
+            summary_parts.append(label)
+
+    summary_line = f"  Steps 1-{older[-1].get('step', '?')} (summarized): {' → '.join(summary_parts)}"
+
+    detail_lines = []
+    for h in recent:
+        step = h.get("step", "?")
+        action = h.get("action", {})
+        if isinstance(action, dict):
+            action = action.get("label") or action.get("type") or "Interacted"
+            
+        result = h.get("result", "?")
+        thought = h.get("thought", "")[:60]
+        url = h.get("url", "")[:60]
+        detail_lines.append(f"  Step {step}: {action} → result={result} | {thought} | url={url}")
+
+    return summary_line + "\n" + "\n".join(detail_lines)
+
+
+def _format_page_alerts(alerts: List[Dict[str, Any]]) -> str:
+    """Format detected page alerts/modals for the LLM prompt."""
+    if not alerts:
+        return "None detected."
+
+    lines = []
+    for a in alerts[:5]:
+        text = (a.get("text") or "")[:120]
+        score = a.get("score", 0)
+        has_close = a.get("hasCloseButton", False)
+        lines.append(f"  - \"{text}\" (confidence={score}, closeable={has_close})")
+    return "\n".join(lines)
+
+
+def _call_agent_llm(goal: str, url: str, dom_summary: str, step_number: int,
+                     screenshot: str = None, action_history: str = "",
+                     page_alerts: str = "", visible_text: str = "",
+                     last_action_result: str = None) -> Optional[Dict]:
     """Call the LLM to decide the next agent action. Returns parsed JSON dict or None."""
     api_key = get_openrouter_api_key()
     if not api_key:
         logger.warning("No OpenRouter API key available for agent LLM call")
         return None
 
-    user_prompt = (
-        f"## User Goal\n{goal}\n\n"
-        f"## Current Page\nURL: {url or 'blank/internal page'}\n"
-        f"Step number: {step_number}\n\n"
-        f"## Interactive DOM Elements\n{dom_summary}"
-    )
+    # Build rich user prompt with all context
+    sections = [
+        f"## User Goal\n{goal}",
+        f"## Current Page\nURL: {url or 'blank/internal page'}\nStep number: {step_number}",
+    ]
 
-    raw = call_agent_chat(AGENT_SYSTEM_PROMPT, user_prompt, api_key)
+    if last_action_result:
+        result_emoji = {"success": "✅", "no_change": "⚠️", "error_detected": "🚨", "navigation": "🌐"}.get(last_action_result, "❓")
+        sections.append(f"## Last Action Result\n{result_emoji} {last_action_result}")
+        if last_action_result == "no_change":
+            sections.append("> ⚠️ YOUR LAST ACTION HAD NO EFFECT. You MUST try a different approach.")
+
+    if page_alerts and page_alerts != "None detected.":
+        sections.append(f"## ⚠️ Active Page Alerts/Modals\n{page_alerts}\n> IMPORTANT: Handle these alerts FIRST before any other action.")
+
+    if visible_text:
+        sections.append(f"## Visible Page Text\n{visible_text[:1500]}")
+
+    if action_history and action_history != "No previous actions.":
+        sections.append(f"## Action History\n{action_history}")
+
+    sections.append(f"## Interactive DOM Elements\n{dom_summary}")
+
+    user_prompt = "\n\n".join(sections)
+
+    # Build the messages array — use multimodal format if screenshot is available
+    if screenshot:
+        # Ensure screenshot has data URI prefix
+        if not screenshot.startswith("data:"):
+            screenshot = f"data:image/png;base64,{screenshot}"
+
+        user_message = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": screenshot}}
+            ]
+        }
+    else:
+        user_message = {"role": "user", "content": user_prompt}
+
+    messages = [
+        {"role": "system", "content": AGENT_SYSTEM_PROMPT},
+        user_message
+    ]
+
+    # Model priority: vision-capable models first when screenshot is available
+    if screenshot:
+        models_to_try = [
+            "google/gemma-4-31b-it:free",
+            "z-ai/glm-5.2:free",
+            "nvidia/nemotron-3.5-lightning:free",
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "minimax/minimax-m3:free",
+        ]
+    else:
+        models_to_try = [
+            "google/gemma-4-31b-it:free",
+            "z-ai/glm-5.2:free",
+            "nvidia/nemotron-3.5-lightning:free",
+            "liquid/lfm-2.5-2.6b:free",
+            "google/gemma-4-26b-a4b-it:free",
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "thinkingmachines/inkling-small:free",
+            "minimax/minimax-m3:free",
+        ]
+
+    raw = _call_llm_with_models(messages, models_to_try, api_key)
     if not raw:
         return None
 
@@ -132,12 +342,65 @@ def _call_agent_llm(goal: str, url: str, dom_summary: str, step_number: int) -> 
     return None
 
 
+def _call_llm_with_models(messages: list, models: list, api_key: str) -> Optional[str]:
+    """Try multiple models in order, return first successful response content."""
+    import urllib.request
+
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://127.0.0.1:8000",
+        "X-Title": "PrivacyAgent Autonomous Assistant"
+    }
+
+    for m in models:
+        payload = {
+            "model": m,
+            "messages": messages,
+            "temperature": 0.2
+        }
+
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode('utf-8'),
+                headers=headers,
+                method='POST'
+            )
+            with urllib.request.urlopen(req, timeout=30) as response:
+                if response.status == 200:
+                    resp_body = response.read().decode('utf-8')
+                    resp_json = json.loads(resp_body)
+
+                    if "error" in resp_json:
+                        logger.error(f"OpenRouter returned an error for {m}: {resp_json['error']}")
+                        continue
+
+                    choices = resp_json.get("choices", [])
+                    if choices and "message" in choices[0]:
+                        content = choices[0]["message"].get("content", "")
+                        if content:
+                            logger.info(f"Agent LLM responded using model: {m}")
+                            return content
+        except Exception as err:
+            logger.warning(f"Agent LLM attempt with model '{m}' failed: {err}")
+
+    return None
+
+
 def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentStepResponse:
     """Convert LLM JSON output into a proper AgentStepResponse."""
-    intent = llm_result.get("intent", "complete").lower()
+    intent = llm_result.get("intent", "complete").lower().replace("_", "_")
     thought = llm_result.get("thought", "Processing...")
+    plan_seq = llm_result.get("plan_sequence", "")
     risk = llm_result.get("risk", "low")
     reason = llm_result.get("reason", "AI-planned action")
+
+    def format_status(msg: str) -> str:
+        if plan_seq:
+            return f"Plan: {plan_seq}\n\nAction: {msg}"
+        return msg
 
     # --- CHAT ---
     if intent == "chat":
@@ -175,45 +438,41 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
             ),
             requires_hitl=False,
             completed=False,
-            status_summary=f"Navigating to {url}"
+            status_summary=format_status(f"Navigating to {url}")
         )
 
     # --- SEARCH ---
     if intent == "search":
-        url = llm_result.get("url", "")
-        if not url:
-            # Build Google search URL from goal
-            url = f"https://www.google.com/search?q={quote_plus(req.goal)}"
+        query = llm_result.get("url", "")
+        if not query:
+            return _fallback_complete(req, "Could not determine search query.")
+        search_url = f"https://www.google.com/search?q={quote_plus(query)}"
         return AgentStepResponse(
             task_id=req.task_id,
             step_number=req.step_number,
             thought=thought,
             action=ActionModel(
                 type="NAVIGATE",
-                url=url,
-                label=f"Search: {req.goal[:40]}",
-                risk="low",
+                url=search_url,
+                label=f"Search Google for '{query}'",
+                risk=risk,
                 reason=reason
             ),
             requires_hitl=False,
             completed=False,
-            status_summary=f"Searching the web..."
+            status_summary=format_status(f"Searching for '{query}'...")
         )
 
     # --- CLICK ---
     if intent == "click":
         selector = llm_result.get("target_selector", "")
         label = llm_result.get("target_label", "Element")
+        
+        if not selector:
+            return _fallback_complete(req, "CLICK requires a valid target_selector.")
 
-        # Validate risk
-        risk_level, hitl_req, safety_reason = evaluate_action_risk(
-            "CLICK", label, "", req.url or "", {}
-        )
-        # Use the higher risk between LLM assessment and safety gate
-        if risk_level == "high" or risk == "high":
-            risk_level = "high"
-            hitl_req = True
-
+        risk_level, hitl_req, safety_reason = evaluate_action_risk("CLICK", label, "", req.url or "", None)
+        
         return AgentStepResponse(
             task_id=req.task_id,
             step_number=req.step_number,
@@ -229,7 +488,45 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
             requires_hitl=hitl_req,
             hitl_prompt=f"Confirm clicking '{label}'?" if hitl_req else None,
             completed=False,
-            status_summary=f"Clicking: {label[:40]}"
+            status_summary=format_status(f"Clicking: {label[:40]}")
+        )
+
+    # --- CLICK_COORDINATE ---
+    if intent in ("click_coordinate", "tap_xy"):
+        x = llm_result.get("x")
+        y = llm_result.get("y")
+        label = llm_result.get("target_label", "Coordinate click")
+
+        if x is None or y is None:
+            return _fallback_complete(req, "CLICK_COORDINATE requires valid x,y coordinates.")
+
+        try:
+            x = int(x)
+            y = int(y)
+        except (TypeError, ValueError):
+            return _fallback_complete(req, f"Invalid coordinates: x={x}, y={y}")
+
+        if x < 0 or y < 0 or x > 4000 or y > 4000:
+            return _fallback_complete(req, f"Coordinates out of bounds: x={x}, y={y}")
+
+        risk_level, hitl_req, safety_reason = evaluate_action_risk("CLICK_COORDINATE", label, "", req.url or "", None)
+
+        return AgentStepResponse(
+            task_id=req.task_id,
+            step_number=req.step_number,
+            thought=thought,
+            action=ActionModel(
+                type="CLICK_COORDINATE",
+                x=x,
+                y=y,
+                label=label[:60],
+                risk=risk_level,
+                reason=reason or safety_reason
+            ),
+            requires_hitl=hitl_req,
+            hitl_prompt=f"Confirm coordinate click at ({x}, {y})?" if hitl_req else None,
+            completed=False,
+            status_summary=format_status(f"Clicking at ({x}, {y}): {label[:30]}")
         )
 
     # --- TYPE ---
@@ -243,7 +540,7 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
             step_number=req.step_number,
             thought=thought,
             action=ActionModel(
-                type="TYPE_AND_ENTER",
+                type="TYPE",
                 target_id=selector if selector.startswith("node-") else None,
                 selector=selector if not selector.startswith("node-") else f'[data-agent-id="{selector}"]',
                 value=value,
@@ -253,7 +550,79 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
             ),
             requires_hitl=False,
             completed=False,
-            status_summary=f"Typing into {label[:30]}..."
+            status_summary=format_status(f"Typing into {label[:30]}...")
+        )
+
+    # --- TYPE_AND_ENTER ---
+    if intent == "type_and_enter":
+        selector = llm_result.get("target_selector", "")
+        label = llm_result.get("target_label", "Input field")
+        value = llm_result.get("type_value", "")
+
+        return AgentStepResponse(
+            task_id=req.task_id,
+            step_number=req.step_number,
+            thought=thought,
+            action=ActionModel(
+                type="TYPE_AND_ENTER",
+                target_id=selector if selector.startswith("node-") else None,
+                selector=selector if not selector.startswith("node-") else f'[data-agent-id="{selector}"]',
+                value=value,
+                label=f"Type '{value[:30]}' and Enter in {label[:30]}",
+                risk=risk,
+                reason=reason
+            ),
+            requires_hitl=False,
+            completed=False,
+            status_summary=format_status(f"Typing and submitting in {label[:30]}...")
+        )
+
+    # --- TYPE_AND_SELECT ---
+    if intent == "type_and_select":
+        selector = llm_result.get("target_selector", "")
+        label = llm_result.get("target_label", "Autocomplete field")
+        value = llm_result.get("type_value", "")
+
+        return AgentStepResponse(
+            task_id=req.task_id,
+            step_number=req.step_number,
+            thought=thought,
+            action=ActionModel(
+                type="TYPE_AND_SELECT",
+                target_id=selector if selector.startswith("node-") else None,
+                selector=selector if not selector.startswith("node-") else f'[data-agent-id="{selector}"]',
+                value=value,
+                label=f"Type & Select '{value[:30]}' in {label[:30]}",
+                risk=risk,
+                reason=reason
+            ),
+            requires_hitl=False,
+            completed=False,
+            status_summary=format_status(f"Typing & Selecting '{value[:30]}' in {label[:30]}...")
+        )
+
+    # --- SELECT ---
+    if intent == "select":
+        selector = llm_result.get("target_selector", "")
+        label = llm_result.get("target_label", "Dropdown")
+        value = llm_result.get("type_value", "")
+
+        return AgentStepResponse(
+            task_id=req.task_id,
+            step_number=req.step_number,
+            thought=thought,
+            action=ActionModel(
+                type="SELECT",
+                target_id=selector if selector.startswith("node-") else None,
+                selector=selector if not selector.startswith("node-") else f'[data-agent-id="{selector}"]',
+                value=value,
+                label=f"Select '{value[:30]}' in {label[:30]}",
+                risk="low",
+                reason=reason
+            ),
+            requires_hitl=False,
+            completed=False,
+            status_summary=format_status(f"Selecting '{value[:30]}' in {label[:30]}...")
         )
 
     # --- SCROLL ---
@@ -270,12 +639,54 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
             ),
             requires_hitl=False,
             completed=False,
-            status_summary="Scrolling page..."
+            status_summary=format_status("Scrolling page...")
+        )
+
+    # --- WAIT ---
+    if intent == "wait":
+        return AgentStepResponse(
+            task_id=req.task_id,
+            step_number=req.step_number,
+            thought=thought,
+            action=ActionModel(
+                type="WAIT",
+                label="Wait for page updates",
+                risk="low",
+                reason=reason
+            ),
+            requires_hitl=False,
+            completed=False,
+            status_summary=format_status("Waiting for page updates...")
+        )
+
+    # --- DISMISS_MODAL ---
+    if intent == "dismiss_modal":
+        selector = llm_result.get("target_selector", "")
+        label = llm_result.get("target_label", "Close button")
+
+        if not selector:
+            return _fallback_complete(req, "DISMISS_MODAL requires a valid target_selector.")
+
+        return AgentStepResponse(
+            task_id=req.task_id,
+            step_number=req.step_number,
+            thought=thought,
+            action=ActionModel(
+                type="DISMISS_MODAL",
+                target_id=selector if selector.startswith("node-") else None,
+                selector=selector if not selector.startswith("node-") else f'[data-agent-id="{selector}"]',
+                label=label[:60],
+                risk="low",
+                reason=reason
+            ),
+            requires_hitl=False,
+            completed=False,
+            status_summary=format_status("Dismissing modal/popup...")
         )
 
     # --- COMPLETE / DEFAULT ---
     summary = llm_result.get("chat_answer") or llm_result.get("thought") or "Task completed."
-    return _fallback_complete(req, summary)
+    return _fallback_complete(req, format_status(summary))
 
 
 def _fallback_complete(req: AgentStepRequest, summary: str) -> AgentStepResponse:
@@ -305,7 +716,7 @@ BANKING_INTENT_KEYWORDS = {
 }
 
 NAVIGATION_PATTERNS = [
-    (r'^(?:go\s+to|open|visit|navigate\s+to)\s+(\S+)', None),  # "go to flipkart" → extract first word
+    (r'^(?:go\s+to|open|visit|navigate\s+to)\s+(\S+)', None),
 ]
 
 
@@ -415,8 +826,6 @@ def _keyword_fallback(req: AgentStepRequest) -> AgentStepResponse:
                 status_summary="Awaiting confirmation for financial action."
             )
 
-    # REMOVED: blind node[0] clicking fallback — this caused the [NAME] spam
-    # Instead, return a helpful completion message
     return _fallback_complete(req, "I understand your request but I'm unable to determine the next step without AI assistance. Please ensure the local server is running with a valid API key.")
 
 
@@ -429,19 +838,38 @@ def plan_next_agent_step(req: AgentStepRequest) -> AgentStepResponse:
     if not goal:
         return _fallback_complete(req, "No task provided.")
 
-    # Step limit guard — prevent infinite loops
-    if req.step_number > 15:
-        return _fallback_complete(req, "Maximum step limit reached. Task stopped for safety.")
+    # Compress state to reduce latency and token usage
+    req = compress_agent_state(req)
+
+    # Step limit guard — raised to 50 for complex multi-step flows
+    if req.step_number > 50:
+        return _fallback_complete(req, "Maximum step limit reached (50 steps). Task stopped for safety.")
 
     # Summarize DOM for LLM
     dom_summary = _summarize_dom_nodes(req.dom_nodes or [])
 
+    # Format action history with summarization for long flows
+    action_history_str = _format_action_history(req.action_history or [])
+
+    # Format page alerts
+    page_alerts_str = _format_page_alerts(req.page_alerts or [])
+
     # Try LLM-powered planning first
-    llm_result = _call_agent_llm(goal, req.url or "", dom_summary, req.step_number)
+    llm_result = _call_agent_llm(
+        goal=goal,
+        url=req.url or "",
+        dom_summary=dom_summary,
+        step_number=req.step_number,
+        screenshot=req.screenshot,
+        action_history=action_history_str,
+        page_alerts=page_alerts_str,
+        visible_text=req.visible_text or "",
+        last_action_result=req.last_action_result
+    )
     if llm_result:
         logger.info(f"LLM agent decided: intent={llm_result.get('intent')}, thought={llm_result.get('thought', '')[:60]}")
         return _build_response_from_llm(req, llm_result)
 
-    # Fallback to keyword-based planning
-    logger.warning("LLM unavailable, using keyword fallback planner")
-    return _keyword_fallback(req)
+    # If LLM is unreachable or fails to generate a valid plan, stop the task immediately.
+    logger.warning("LLM unavailable or failed to process step. Halting task.")
+    return _fallback_complete(req, "🛑 STOPPED: Server could not process the step. The task has been halted to prevent errors or looping.")

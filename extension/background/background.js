@@ -1,5 +1,9 @@
 const SERVER_BASE = 'http://127.0.0.1:8000';
 
+chrome.sidePanel
+  .setPanelBehavior({ openPanelOnActionClick: true })
+  .catch((error) => console.error(error));
+
 async function fetchLocalServer(path, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 60000);
@@ -58,7 +62,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     if (msg.type === 'EXECUTE_ACTION') {
       const action = msg.action || {};
-      const allowed = ['CLICK', 'SCROLL', 'HIGHLIGHT', 'TYPE', 'LOCAL_AUTOFILL', 'NAVIGATE', 'COMPLETE', 'NO_ACTION'];
+      const allowed = ['CLICK', 'CLICK_COORDINATE', 'SCROLL', 'HIGHLIGHT', 'TYPE', 'TYPE_AND_ENTER', 'TYPE_AND_SELECT', 'SELECT', 'WAIT', 'DISMISS_MODAL', 'LOCAL_AUTOFILL', 'NAVIGATE', 'COMPLETE', 'NO_ACTION'];
       
       if (!allowed.includes(action.type)) {
         return { ok: false, error: 'Action not allow-listed' };

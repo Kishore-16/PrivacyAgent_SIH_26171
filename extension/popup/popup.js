@@ -193,7 +193,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const nextStep = await sendBgMessage({
         type: 'PLAN',
         context: domContext.payload,
-        image: sanitized.image,
+        image: vRes?.sanitized_image,
         task: 'Analyze the page and determine the next safe action'
       });
       if (nextStep?.ok && nextStep.action) {
@@ -632,6 +632,33 @@ document.addEventListener('DOMContentLoaded', () => {
   let popupPendingStep = null;
   const SERVER_AGENT_BASE = 'http://127.0.0.1:8000/agent';
 
+  function saveAgentState() {
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({
+        agentState: {
+          popupTaskId,
+          popupGoal,
+          popupStepCount,
+          chatHtml: popupChatViewport.innerHTML
+        }
+      });
+    }
+  }
+
+  function loadAgentState() {
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get(['agentState'], (res) => {
+        if (res.agentState && res.agentState.chatHtml) {
+          popupTaskId = res.agentState.popupTaskId;
+          popupGoal = res.agentState.popupGoal;
+          popupStepCount = res.agentState.popupStepCount || 1;
+          popupChatViewport.innerHTML = res.agentState.chatHtml;
+          popupChatViewport.scrollTop = popupChatViewport.scrollHeight;
+        }
+      });
+    }
+  }
+
   function appendPopupMsg(role, text) {
     if (!popupChatViewport) return;
     const msgDiv = document.createElement('div');
@@ -643,6 +670,7 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
     popupChatViewport.appendChild(msgDiv);
     popupChatViewport.scrollTop = popupChatViewport.scrollHeight;
+    saveAgentState();
   }
 
   function appendPopupStepCard(thought, actionLabel, risk) {
@@ -655,6 +683,7 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
     popupChatViewport.appendChild(card);
     popupChatViewport.scrollTop = popupChatViewport.scrollHeight;
+    saveAgentState();
   }
 
   async function startPopupAgentTask(goalText) {
@@ -673,6 +702,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!data.ok) throw new Error(data.detail || 'Failed to start agent task');
 
       popupTaskId = data.task_id;
+      saveAgentState();
       appendPopupMsg('system', `Agent active (${popupTaskId}). Processing task...`);
       runNextPopupAgentStep();
     } catch (err) {
@@ -837,6 +867,21 @@ document.addEventListener('DOMContentLoaded', () => {
       const val = popupTaskInput.value.trim();
       if (!val) return;
       popupTaskInput.value = '';
+      
+      // Clear state for new task
+      popupTaskId = null;
+      popupChatViewport.innerHTML = `
+        <div class="message system-msg">
+          <div class="msg-avatar">🤖</div>
+          <div class="msg-content">
+            <strong>Autonomous Privacy Assistant</strong>
+            <p>Tell me what to do (e.g. <em>"Fill application form"</em> or <em>"Submit deposit to account"</em>).</p>
+            <span class="privacy-note">🔒 On-device privacy firewall active. Raw data masked locally.</span>
+          </div>
+        </div>
+      `;
+      saveAgentState();
+      
       startPopupAgentTask(val);
     };
   }

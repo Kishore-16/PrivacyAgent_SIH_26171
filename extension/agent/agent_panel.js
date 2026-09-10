@@ -42,13 +42,22 @@ document.addEventListener('DOMContentLoaded', () => {
   let stepCounter = 1;
   let pendingStepData = null;
 
+  // --- Interaction history & verification state ---
+  let actionHistory = [];
+  let lastActionResult = null;
+  let consecutiveFailures = 0;
+  let lastFailedSignature = '';
+
   // Sahayak State
-  let shkActiveLangKey = "1"; // Default: English
+  let shkActiveLangKey = "1";
   let shkActiveDocType = "generic";
   let shkSelectedFileObj = null;
   let shkTargetSelector = null;
   let shkIsProcessing = false;
 
+  // -----------------------------------------------------------------------
+  // UI Helpers
+  // -----------------------------------------------------------------------
   function setStatus(text, isBusy = false) {
     statusText.textContent = text;
     const dot = document.querySelector('.status-dot');
@@ -89,6 +98,9 @@ document.addEventListener('DOMContentLoaded', () => {
     return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
+  // -----------------------------------------------------------------------
+  // Tab & DOM helpers
+  // -----------------------------------------------------------------------
   async function getActiveTab() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     return tab;
@@ -97,7 +109,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function requestTabDomNodes(tabId) {
     try {
       const res = await chrome.tabs.sendMessage(tabId, { type: 'AGENT_GET_DOM' });
-      return res || { ok: false, nodes: [] };
+      return res || { ok: false, nodes: [], page_alerts: [], visible_text: '', input_redaction_regions: [] };
     } catch (e) {
       console.warn('DOM script missing, injecting...', e);
       await chrome.scripting.executeScript({
@@ -114,7 +126,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ]
       });
       const res = await chrome.tabs.sendMessage(tabId, { type: 'AGENT_GET_DOM' });
-      return res || { ok: false, nodes: [] };
+      return res || { ok: false, nodes: [], page_alerts: [], visible_text: '', input_redaction_regions: [] };
     }
   }
 
@@ -127,7 +139,201 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // --- SAHAYAK SIDEPANEL MANAGER ---
+  // -----------------------------------------------------------------------
+  // Screenshot capture with input-field redaction
+  // -----------------------------------------------------------------------
+  async function captureRedactedScreenshot(redactionRegions) {
+    try {
+      const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'jpeg', quality: 60 });
+
+      // Draw redaction rectangles and downscale on an offscreen canvas
+      return await new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          let targetWidth = img.width;
+          let targetHeight = img.height;
+          const MAX_DIMENSION = 1024;
+          
+          if (targetWidth > MAX_DIMENSION || targetHeight > MAX_DIMENSION) {
+            const ratio = Math.min(MAX_DIMENSION / targetWidth, MAX_DIMENSION / targetHeight);
+            targetWidth = Math.round(targetWidth * ratio);
+            targetHeight = Math.round(targetHeight * ratio);
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+          const ctx = canvas.getContext('2d');
+          
+          // Draw image at downscaled size
+          ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+
+          if (redactionRegions && redactionRegions.length > 0) {
+            // Calculate scale factor from screen logic (original code scaled against screen width)
+            // But now we also need to account for our downscaling
+            const screenScaleX = img.width / window.screen.availWidth;
+            const screenScaleY = img.height / window.screen.availHeight;
+            const finalScaleX = screenScaleX * (targetWidth / img.width);
+            const finalScaleY = screenScaleY * (targetHeight / img.height);
+
+            ctx.fillStyle = '#888888';
+            ctx.font = `${Math.round(12 * finalScaleY)}px monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            for (const region of redactionRegions) {
+              const rx = Math.round(region.x * finalScaleX);
+              const ry = Math.round(region.y * finalScaleY);
+              const rw = Math.round(region.width * finalScaleX);
+              const rh = Math.round(region.height * finalScaleY);
+
+              ctx.fillStyle = '#888888';
+              ctx.fillRect(rx, ry, rw, rh);
+
+              ctx.fillStyle = '#ffffff';
+              ctx.fillText(region.label || '[REDACTED]', rx + rw / 2, ry + rh / 2);
+            }
+          }
+
+          resolve(canvas.toDataURL('image/jpeg', 0.6));
+        };
+        img.onerror = () => resolve(dataUrl); // fallback to original
+        img.src = dataUrl;
+      });
+    } catch (e) {
+      console.warn('Screenshot capture failed:', e);
+      return null;
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Smart wait — waits for page to settle after an action
+  // -----------------------------------------------------------------------
+  function smartWait(tabId, preActionUrl) {
+    return new Promise((resolve) => {
+      let resolved = false;
+      const maxTimeout = 5000;
+
+      const done = (reason) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timer);
+        if (navListener) chrome.webNavigation.onCompleted.removeListener(navListener);
+        resolve(reason);
+      };
+
+      // Timeout fallback
+      const timer = setTimeout(() => done('timeout'), maxTimeout);
+
+      // Listen for navigation completion
+      let navListener = null;
+      if (chrome.webNavigation && chrome.webNavigation.onCompleted) {
+        navListener = (details) => {
+          if (details.tabId === tabId && details.frameId === 0) {
+            // Give the page a moment to render after navigation
+            setTimeout(() => done('navigation'), 500);
+          }
+        };
+        chrome.webNavigation.onCompleted.addListener(navListener);
+      }
+
+      // For non-navigation DOM changes, use a shorter delay
+      // (MutationObserver can't be used from the side panel directly)
+      setTimeout(() => {
+        if (!resolved) done('dom_settle');
+      }, 2000);
+    });
+  }
+
+  // -----------------------------------------------------------------------
+  // Action verification — compare pre/post action state
+  // -----------------------------------------------------------------------
+  async function verifyActionResult(tabId, preActionUrl, preActionNodeCount) {
+    const postTab = await getActiveTab();
+    const postUrl = postTab?.url || '';
+
+    // URL changed → navigation
+    if (postUrl !== preActionUrl) {
+      return 'navigation';
+    }
+
+    // Re-query DOM to see if it changed
+    try {
+      const postDom = await requestTabDomNodes(tabId);
+      const postNodeCount = (postDom.nodes || []).length;
+
+      // Check for new alerts/errors
+      if (postDom.page_alerts && postDom.page_alerts.length > 0) {
+        return 'error_detected';
+      }
+
+      // Significant DOM change
+      if (Math.abs(postNodeCount - preActionNodeCount) > 3) {
+        return 'success';
+      }
+    } catch (e) {
+      // Tab might have navigated, content script unavailable
+      return 'navigation';
+    }
+
+    return 'no_change';
+  }
+
+  // -----------------------------------------------------------------------
+  // Interaction history management — with summarization
+  // -----------------------------------------------------------------------
+  function addToHistory(step, actionLabel, result, thought, url) {
+    actionHistory.push({
+      step,
+      action: (actionLabel || '').slice(0, 60),
+      result,
+      thought: (thought || '').slice(0, 80),
+      url: (url || '').slice(0, 80)
+    });
+
+    // Track consecutive failures for error recovery
+    const signature = `${actionLabel}`;
+    if (result === 'no_change') {
+      if (signature === lastFailedSignature) {
+        consecutiveFailures++;
+      } else {
+        consecutiveFailures = 1;
+        lastFailedSignature = signature;
+      }
+    } else {
+      consecutiveFailures = 0;
+      lastFailedSignature = '';
+    }
+  }
+
+  function getHistoryForPayload() {
+    if (actionHistory.length <= 10) {
+      return actionHistory;
+    }
+
+    // Summarize older entries, keep last 5 in detail
+    const older = actionHistory.slice(0, -5);
+    const recent = actionHistory.slice(-5);
+
+    const summaryParts = older.map(h => {
+      const icon = h.result === 'success' ? '✓' : (h.result === 'no_change' ? '✗' : '→');
+      return `${h.action} ${icon}`;
+    });
+
+    const summaryEntry = {
+      step: `1-${older[older.length - 1].step}`,
+      action: `Summary: ${summaryParts.join(' → ')}`.slice(0, 300),
+      result: 'summarized',
+      thought: `Completed ${older.length} earlier steps`,
+      url: older[older.length - 1].url || ''
+    };
+
+    return [summaryEntry, ...recent];
+  }
+
+  // -----------------------------------------------------------------------
+  // Sahayak Sidepanel Manager (unchanged from original)
+  // -----------------------------------------------------------------------
   function openSahayakCard(docType = "generic", selector = null) {
     shkActiveDocType = docType;
     shkTargetSelector = selector;
@@ -156,11 +362,9 @@ document.addEventListener('DOMContentLoaded', () => {
     let portalName = docConfig.portalName;
     let portalUrl = docConfig.portalUrl;
 
-    // Read selected State / Jurisdiction from state dropdown
-    const shkStateSelect = $('#shkStateSelect');
+    const shkStateSelect = document.getElementById('shkStateSelect');
     const selectedState = shkStateSelect?.value || 'National';
 
-    // Apply Skeleton Loading state while OpenRouter AI generates content
     if (shkDocTitle) shkDocTitle.classList.add('sahayak-skeleton');
     if (shkDocDesc) shkDocDesc.classList.add('sahayak-skeleton');
     if (shkIdentifyText) shkIdentifyText.classList.add('sahayak-skeleton');
@@ -178,7 +382,6 @@ document.addEventListener('DOMContentLoaded', () => {
       `;
     }
 
-    // Fetch dynamic state-specific AI guidance from OpenRouter API via local server
     try {
       const aiResp = await fetch(`http://127.0.0.1:8000/sahayak/guides?doc=${encodeURIComponent(shkActiveDocType)}&state=${encodeURIComponent(selectedState)}&lang=${langCode}`);
       if (aiResp.ok) {
@@ -197,7 +400,6 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (netErr) {
       console.warn('[Sahayak Sidepanel] AI Guide endpoint fallback:', netErr.message);
     } finally {
-      // Remove Skeleton Loading classes
       if (shkDocTitle) shkDocTitle.classList.remove('sahayak-skeleton');
       if (shkDocDesc) shkDocDesc.classList.remove('sahayak-skeleton');
       if (shkIdentifyText) shkIdentifyText.classList.remove('sahayak-skeleton');
@@ -209,9 +411,6 @@ document.addEventListener('DOMContentLoaded', () => {
       shkStateSelect.onchange = () => renderSahayakUI();
     }
 
-
-
-    // Header & Titles
     if (shkModalTitle) shkModalTitle.textContent = strings.modalTitle;
     if (shkDocBadge) shkDocBadge.textContent = `${strings.requiredDocLabel} ${docTitleText}`;
     if (shkAboutTitle) shkAboutTitle.textContent = strings.aboutTitle;
@@ -220,7 +419,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (shkIdentifyTitle) shkIdentifyTitle.textContent = strings.identifyTitle;
     if (shkIdentifyText) shkIdentifyText.textContent = identifyText;
 
-    // Language Buttons Active State
     if (shkLangButtons) {
       shkLangButtons.querySelectorAll('.sahayak-lang-btn').forEach(btn => {
         const key = btn.getAttribute('data-lang-key');
@@ -232,12 +430,10 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
 
-    // Selected File
     if (shkSelectedFile) {
       shkSelectedFile.textContent = shkSelectedFileObj ? `📄 Selected: ${shkSelectedFileObj.name}` : '';
     }
 
-    // Help Center
     if (shkHelpTitle) shkHelpTitle.textContent = strings.instructionCenterTitle;
     if (shkPortalPrefix) shkPortalPrefix.textContent = strings.officialLinkPrefix;
     if (shkPortalName) shkPortalName.textContent = portalName;
@@ -248,7 +444,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (shkOnlineProcTitle) shkOnlineProcTitle.textContent = strings.onlineProcedureTitle;
     if (shkOfflineProcTitle) shkOfflineProcTitle.textContent = strings.offlineProcedureTitle;
 
-    // Steps Lists
     if (shkOnlineStepsList) {
       shkOnlineStepsList.innerHTML = onlineSteps.map((step, idx) => `
         <div class="sahayak-step-card">
@@ -267,13 +462,11 @@ document.addEventListener('DOMContentLoaded', () => {
       `).join('');
     }
 
-    // Submit Button state
     if (shkSubmitBtn) {
       shkSubmitBtn.disabled = !shkSelectedFileObj || shkIsProcessing;
       shkSubmitBtn.textContent = shkIsProcessing ? strings.processingText : strings.submitBtn;
     }
   }
-
 
   // Language Button Click Listeners
   if (shkLangButtons) {
@@ -352,7 +545,6 @@ document.addEventListener('DOMContentLoaded', () => {
           r.readAsDataURL(shkSelectedFileObj);
         });
 
-        // Call local vision redaction engine
         try {
           await fetch('http://127.0.0.1:8000/sahayak/process-document', {
             method: 'POST',
@@ -368,7 +560,6 @@ document.addEventListener('DOMContentLoaded', () => {
           console.warn('[Sahayak Sidepanel] Redaction endpoint offline fallback:', netErr);
         }
 
-        // Attach file to webpage input element
         const activeTab = await getActiveTab();
         if (activeTab) {
           await chrome.tabs.sendMessage(activeTab.id, {
@@ -381,7 +572,6 @@ document.addEventListener('DOMContentLoaded', () => {
         appendMessage('system', `✅ Sahayak attached document '${shkSelectedFileObj.name}' to form.`);
         closeSahayakCard();
 
-        // Resume step execution if pending
         if (currentTaskId) {
           stepCounter++;
           setTimeout(runNextStep, 1500);
@@ -394,12 +584,18 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
 
-  // --- MAIN AGENT LOOP ---
+  // -----------------------------------------------------------------------
+  // MAIN AGENT LOOP — Observe-Plan-Act with verification
+  // -----------------------------------------------------------------------
   async function startAgentTask(goalText) {
     currentGoal = RedactionEngine.sanitizeText(goalText);
     stepCounter = 1;
-    setStatus('Initializing...', true);
+    actionHistory = [];
+    lastActionResult = null;
+    consecutiveFailures = 0;
+    lastFailedSignature = '';
 
+    setStatus('Initializing...', true);
     appendMessage('user', goalText);
 
     try {
@@ -409,12 +605,12 @@ document.addEventListener('DOMContentLoaded', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ task: currentGoal, url: RedactionEngine.sanitizeText(activeTab?.url || '') })
       });
-      
+
       const data = await resp.json();
       if (!data.ok) throw new Error(data.detail || 'Failed to start task');
 
       currentTaskId = data.task_id;
-      appendMessage('system', `Task initialized (${currentTaskId}). Beginning autonomous browser loop...`);
+      appendMessage('system', `Agent active (${currentTaskId}). Processing task...`);
 
       runNextStep();
     } catch (err) {
@@ -433,7 +629,11 @@ document.addEventListener('DOMContentLoaded', () => {
       appendMessage('system', '⚠️ No active browser tab is available for the next safe step.');
       return;
     }
+
+    // --- OBSERVE: Capture DOM + alerts + visible text + redaction regions ---
     const domData = await requestTabDomNodes(activeTab.id);
+    const preActionUrl = domData.url || activeTab.url;
+    const preActionNodeCount = (domData.nodes || []).length;
 
     // Check if DOM contains empty file input requiring Sahayak
     const missingFileInput = (domData.nodes || []).find(n => n.tag === 'input' && n.type === 'file');
@@ -445,7 +645,15 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    // --- CAPTURE: Screenshot with input-field redaction ---
+    let screenshot = null;
+    try {
+      screenshot = await captureRedactedScreenshot(domData.input_redaction_regions || []);
+    } catch (e) {
+      console.warn('Screenshot capture failed, continuing without:', e);
+    }
 
+    // --- BUILD PAYLOAD: Rich state for the LLM ---
     const stepPayload = {
       task_id: currentTaskId,
       goal: currentGoal,
@@ -454,8 +662,20 @@ document.addEventListener('DOMContentLoaded', () => {
       sanitized_findings: domData.sanitized_findings || [],
       url: domData.url || activeTab.url,
       title: RedactionEngine.sanitizeText(domData.title || activeTab.title || ''),
-      client_attested: true
+      client_attested: true,
+      // New fields
+      screenshot: screenshot || null,
+      action_history: getHistoryForPayload(),
+      page_alerts: domData.page_alerts || [],
+      visible_text: domData.visible_text || '',
+      last_action_result: lastActionResult
     };
+
+    // Inject recovery hint if stuck in a loop
+    if (consecutiveFailures >= 3) {
+      stepPayload.visible_text = `⚠️ RECOVERY MODE: The last ${consecutiveFailures} actions had NO EFFECT on the page. You MUST try a completely different approach — different element, different action type, scroll to reveal hidden elements, or dismiss a blocking modal.\n\n${stepPayload.visible_text}`;
+      appendMessage('system', `🔄 Recovery mode: ${consecutiveFailures} consecutive failures detected. Asking AI for a different approach.`);
+    }
 
     try {
       const resp = await fetch(`${SERVER_BASE}/task/step`, {
@@ -471,15 +691,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const stepResult = await resp.json();
 
-      appendStepCard(stepResult.thought || 'Next safe step', stepResult.action?.label || stepResult.action?.type || 'NO_ACTION', stepResult.action?.risk || 'low');
+      appendStepCard(
+        stepResult.thought || 'Next safe step',
+        stepResult.action?.label || stepResult.action?.type || 'NO_ACTION',
+        stepResult.action?.risk || 'low'
+      );
 
       if (stepResult.requires_hitl) {
-        pendingStepData = { stepResult, activeTabId: activeTab.id };
+        pendingStepData = { stepResult, activeTabId: activeTab.id, preActionUrl, preActionNodeCount };
         showHitlModal(stepResult.action.reason, stepResult.hitl_prompt || stepResult.action.label);
         return;
       }
 
-      await performActionAndContinue(activeTab.id, stepResult);
+      await performActionAndContinue(activeTab.id, stepResult, preActionUrl, preActionNodeCount);
 
     } catch (err) {
       setStatus('Paused (Error)');
@@ -487,40 +711,77 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  async function performActionAndContinue(tabId, stepResult) {
+  async function performActionAndContinue(tabId, stepResult, preActionUrl, preActionNodeCount) {
     if (!stepResult?.action) {
       setStatus('Paused (Invalid action)');
       appendMessage('system', '⚠️ The local planner returned no executable action.');
       return;
     }
+
+    // --- COMPLETE ---
     if (stepResult.completed || stepResult.action?.type === 'COMPLETE') {
       setStatus('Completed');
       appendMessage('system', `🎉 Task Complete! ${stepResult.status_summary}`);
+      addToHistory(stepCounter, 'COMPLETE', 'success', stepResult.thought, preActionUrl);
       currentTaskId = null;
       return;
     }
 
+    // --- NAVIGATE (handled via chrome.tabs.update for reliable navigation) ---
     if (stepResult.action?.type === 'NAVIGATE' && stepResult.action.url) {
       appendMessage('system', `🌐 Navigating tab to: ${stepResult.action.url}`);
       await chrome.tabs.update(tabId, { url: stepResult.action.url });
+      addToHistory(stepCounter, `Navigate: ${stepResult.action.url.slice(0, 50)}`, 'navigation', stepResult.thought, stepResult.action.url);
+      lastActionResult = 'navigation';
       stepCounter++;
-      setTimeout(() => {
-        runNextStep();
-      }, 3000);
+      // Wait for navigation to complete
+      await smartWait(tabId, preActionUrl);
+      setTimeout(runNextStep, 1000);
       return;
     }
 
+    // --- WAIT (just wait and re-observe) ---
+    if (stepResult.action?.type === 'WAIT') {
+      appendMessage('system', '⏳ Waiting for page to update...');
+      addToHistory(stepCounter, 'WAIT', 'success', stepResult.thought, preActionUrl);
+      lastActionResult = 'success';
+      stepCounter++;
+      await smartWait(tabId, preActionUrl);
+      setTimeout(runNextStep, 500);
+      return;
+    }
+
+    // --- ALL OTHER ACTIONS: Execute → Verify → Continue ---
     const execRes = await executeTabAction(tabId, stepResult.action);
+    const actionLabel = stepResult.action.label || stepResult.action.type;
+
     if (!execRes.ok) {
-      appendMessage('system', `⚠️ Local Action Notice: ${execRes.error || 'Action delayed'}`);
+      appendMessage('system', `⚠️ Action Notice: ${execRes.error || 'Action delayed'}`);
+      addToHistory(stepCounter, actionLabel, 'no_change', `Failed: ${execRes.error}`, preActionUrl);
+      lastActionResult = 'no_change';
+    } else {
+      // Wait for page to settle after the action
+      await smartWait(tabId, preActionUrl);
+
+      // Verify the action had an effect
+      const verificationResult = await verifyActionResult(tabId, preActionUrl, preActionNodeCount);
+      lastActionResult = verificationResult;
+      addToHistory(stepCounter, actionLabel, verificationResult, stepResult.thought, preActionUrl);
+
+      if (verificationResult === 'no_change') {
+        appendMessage('system', `⚠️ Action "${actionLabel}" had no visible effect on the page.`);
+      } else if (verificationResult === 'error_detected') {
+        appendMessage('system', `🚨 An error or popup appeared after "${actionLabel}".`);
+      }
     }
 
     stepCounter++;
-    setTimeout(() => {
-      runNextStep();
-    }, 1500);
+    setTimeout(runNextStep, 800);
   }
 
+  // -----------------------------------------------------------------------
+  // HITL (Human-in-the-Loop) modal
+  // -----------------------------------------------------------------------
   function showHitlModal(reason, promptText) {
     setStatus('Awaiting Approval', true);
     hitlReason.textContent = reason;
@@ -535,10 +796,10 @@ document.addEventListener('DOMContentLoaded', () => {
   btnApproveHitl.addEventListener('click', async () => {
     hideHitlModal();
     if (pendingStepData) {
-      const { activeTabId, stepResult } = pendingStepData;
+      const { activeTabId, stepResult, preActionUrl, preActionNodeCount } = pendingStepData;
       pendingStepData = null;
       appendMessage('system', '✅ High-risk action approved by user. Resuming autonomous task...');
-      await performActionAndContinue(activeTabId, stepResult);
+      await performActionAndContinue(activeTabId, stepResult, preActionUrl, preActionNodeCount);
     }
   });
 
@@ -550,6 +811,9 @@ document.addEventListener('DOMContentLoaded', () => {
     appendMessage('system', '🚫 Task cancelled by user.');
   });
 
+  // -----------------------------------------------------------------------
+  // Form submission handler
+  // -----------------------------------------------------------------------
   taskForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const val = taskInput.value.trim();

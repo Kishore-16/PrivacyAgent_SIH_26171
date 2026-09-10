@@ -54,85 +54,93 @@ def plan_action(context: dict, image: str = None, task: str = None) -> dict:
         clean_scan = {k: v for k, v in scan_info.items() if k != 'timestamp'}
         user_content = f"Task: {task or 'Analyze the page and determine the next safe action'}\n\nSanitized DOM findings:\n{json.dumps(clean_scan, separators=(',', ':'))}"
         
-        payload = {
-            "model": "google/gemma-4-31b-it:free",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": user_content
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": image
+        models_to_try = [
+            "z-ai/glm-5.2:free",
+            "google/gemma-4-31b-it:free"
+        ]
+
+        for model_name in models_to_try:
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": user_content
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": image
+                                }
                             }
-                        }
-                    ]
-                }
-            ]
-        }
-        
-        try:
-            resp = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                },
-                json=payload,
-                timeout=30
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                
-                if "error" in data:
-                    logger.error(f"OpenRouter returned an error: {data['error']}")
-                    raise Exception(f"OpenRouter API Error: {data['error']}")
+                        ]
+                    }
+                ]
+            }
+            
+            try:
+                resp = requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json=payload,
+                    timeout=30
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
                     
-                content = data["choices"][0]["message"]["content"]
-                
-                # Robustly extract JSON object using regex
-                match = re.search(r'\{[\s\S]*\}', content)
-                if match:
-                    content = match.group(0)
-                
-                ai_action = json.loads(content)
-                
-                action_type = ai_action.get("type") or ai_action.get("action") or "HIGHLIGHT"
-                action_selector = ai_action.get("selector") or ai_action.get("target") or ""
-                
-                # Strip out hallucinated Playwright pseudo-selectors like "text=Login"
-                if action_selector and action_selector.startswith("text="):
-                    # We can't use text= in standard querySelector, so just null it out
-                    # The extension will fall back to clicking next available control if no target_id is present
-                    action_selector = ""
-                
-                planned = {
-                    "type": str(action_type).upper(),
-                    "target_id": ai_action.get("target_id"),
-                    "selector": action_selector,
-                    "url": ai_action.get("url"),
-                    "direction": ai_action.get("direction"),
-                    "label": ai_action.get("label", "AI Action"),
-                    "risk": str(ai_action.get("risk", "low")).lower(),
-                    "reason": ai_action.get("reason", "AI planned action")
-                }
-                if "value" in ai_action:
-                    planned["textValue"] = ai_action["value"]
-                    planned["value"] = ai_action["value"]
-            else:
-                logger.error(f"OpenRouter API failed: {resp.text}")
-                with open("error.log", "a") as f: f.write(f"OpenRouter HTTP Error: {resp.status_code} {resp.text}\n")
-        except Exception as e:
-            logger.error(f"Failed to parse AI response: {e}")
-            with open("error.log", "a") as f: f.write(f"Exception calling OpenRouter: {type(e).__name__}: {e}\n")
+                    if "error" in data:
+                        logger.error(f"OpenRouter returned an error for {model_name}: {data['error']}")
+                        continue
+                        
+                    content = data["choices"][0]["message"]["content"]
+                    
+                    # Robustly extract JSON object using regex
+                    match = re.search(r'\{[\s\S]*\}', content)
+                    if match:
+                        content = match.group(0)
+                    
+                    ai_action = json.loads(content)
+                    
+                    action_type = ai_action.get("type") or ai_action.get("action") or "HIGHLIGHT"
+                    action_selector = ai_action.get("selector") or ai_action.get("target") or ""
+                    
+                    # Strip out hallucinated Playwright pseudo-selectors like "text=Login"
+                    if action_selector and action_selector.startswith("text="):
+                        # We can't use text= in standard querySelector, so just null it out
+                        # The extension will fall back to clicking next available control if no target_id is present
+                        action_selector = ""
+                    
+                    planned = {
+                        "type": str(action_type).upper(),
+                        "target_id": ai_action.get("target_id"),
+                        "selector": action_selector,
+                        "url": ai_action.get("url"),
+                        "direction": ai_action.get("direction"),
+                        "label": ai_action.get("label", "AI Action"),
+                        "risk": str(ai_action.get("risk", "low")).lower(),
+                        "reason": ai_action.get("reason", "AI planned action")
+                    }
+                    if "value" in ai_action:
+                        planned["textValue"] = ai_action["value"]
+                        planned["value"] = ai_action["value"]
+                    
+                    break # Success, stop trying other models
+                else:
+                    logger.error(f"OpenRouter API failed for {model_name}: {resp.text}")
+                    with open("error.log", "a") as f: f.write(f"OpenRouter HTTP Error ({model_name}): {resp.status_code} {resp.text}\n")
+            except Exception as e:
+                logger.error(f"Failed to parse AI response for {model_name}: {e}")
+                with open("error.log", "a") as f: f.write(f"Exception calling OpenRouter ({model_name}): {type(e).__name__}: {e}\n")
 
     if not planned:
         # Fallback to simple heuristic

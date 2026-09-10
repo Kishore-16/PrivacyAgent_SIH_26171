@@ -16,10 +16,9 @@
     "http://localhost:8000/*"
   ],
   "side_panel": {
-    "default_path": "agent/agent_panel.html"
+    "default_path": "popup/popup.html"
   },
   "action": {
-    "default_popup": "popup/popup.html",
     "default_title": "PrivacyAgent",
      "default_icon": {
        "48": "aizen_48x48.png",
