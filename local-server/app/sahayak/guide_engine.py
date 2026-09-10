@@ -70,6 +70,36 @@ def get_openrouter_api_key() -> Optional[str]:
     return None
 
 
+def get_gemini_api_key() -> Optional[str]:
+    """Loads GEMINI_API_KEY or GOOGLE_API_KEY from local-server/.env or environment variables."""
+    key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if key and key.strip():
+        return key.strip().strip("'").strip('"')
+    
+    server_dir = Path(__file__).resolve().parent.parent.parent
+    possible_env_files = [
+        server_dir / ".env",
+        server_dir.parent / ".env"
+    ]
+    for env_path in possible_env_files:
+        if env_path.exists():
+            try:
+                content = env_path.read_text(encoding="utf-8")
+                for line in content.splitlines():
+                    line_s = line.strip()
+                    if line_s.startswith("GEMINI_API_KEY") or line_s.startswith("GOOGLE_API_KEY"):
+                        parts = line_s.split("=", 1)
+                        if len(parts) == 2:
+                            val = parts[1].strip().strip("'").strip('"')
+                            if val:
+                                os.environ["GEMINI_API_KEY"] = val
+                                return val
+            except Exception as e:
+                logger.warning(f"Error reading .env at {env_path}: {e}")
+    return None
+
+
+
 FALLBACK_DATABASE: Dict[str, Dict[str, Any]] = {
     "income_certificate": {
         "doc_id": "income_certificate",
@@ -136,6 +166,65 @@ def resolve_verified_portal(state_context: str, fallback_portal: str = "National
     return fallback_portal, fallback_url
 
 
+def call_gemini_api(prompt: str, api_key: str, system_prompt: Optional[str] = None) -> Optional[str]:
+    """Executes HTTP POST to Google Generative Language API (Gemini)."""
+    import urllib.request
+
+    models_to_try = [
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash"
+    ]
+
+    for m in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "X-goog-api-key": api_key
+        }
+        payload: Dict[str, Any] = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt}
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.3
+            }
+        }
+        if system_prompt:
+            payload["systemInstruction"] = {
+                "parts": [{"text": system_prompt}]
+            }
+
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode('utf-8'),
+                headers=headers,
+                method='POST'
+            )
+            with urllib.request.urlopen(req, timeout=15) as response:
+                if response.status == 200:
+                    resp_body = response.read().decode('utf-8')
+                    resp_json = json.loads(resp_body)
+                    candidates = resp_json.get("candidates", [])
+                    if candidates and "content" in candidates[0]:
+                        parts = candidates[0]["content"].get("parts", [])
+                        if parts and "text" in parts[0]:
+                            text = parts[0]["text"]
+                            if text:
+                                logger.info(f"Google Gemini LLM successfully responded using model: {m}")
+                                return text
+        except Exception as err:
+            logger.warning(f"Google Gemini API attempt with model '{m}' failed: {err}")
+
+    return None
+
+
 def call_openrouter_api(prompt: str, api_key: str, model_name: str = "openrouter/auto") -> Optional[str]:
     """Executes HTTP POST to OpenRouter Chat Completions endpoint."""
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -196,11 +285,24 @@ def call_openrouter_api(prompt: str, api_key: str, model_name: str = "openrouter
     return None
 
 
-def call_agent_chat(system_prompt: str, user_prompt: str, api_key: str) -> Optional[str]:
-    """General-purpose LLM chat call for the autonomous agent. Uses a custom system prompt."""
+def call_agent_chat(system_prompt: str, user_prompt: str, api_key: Optional[str] = None) -> Optional[str]:
+    """General-purpose LLM chat call for the autonomous agent. Tries Google Gemini first, falls back to OpenRouter."""
+    # 1. Try Google Gemini first (Main provider)
+    gemini_key = get_gemini_api_key()
+    if gemini_key:
+        res = call_gemini_api(user_prompt, gemini_key, system_prompt=system_prompt)
+        if res:
+            return res
+        logger.warning("Google Gemini failed in call_agent_chat, falling back to OpenRouter...")
+
+    # 2. Fallback to OpenRouter (Keep all existing models intact)
+    openrouter_key = api_key or get_openrouter_api_key()
+    if not openrouter_key:
+        return None
+
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {openrouter_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "http://127.0.0.1:8000",
         "X-Title": "PrivacyAgent Autonomous Assistant"
@@ -251,7 +353,7 @@ def call_agent_chat(system_prompt: str, user_prompt: str, api_key: str) -> Optio
 
 
 def generate_dynamic_guide(doc_query: str = "Income Certificate", state_context: str = "National", language: str = "en") -> Dict[str, Any]:
-    """Generates dynamic AI guidance for a document and state using OpenRouter API with URL verification."""
+    """Generates dynamic AI guidance for a document and state using Google Gemini / OpenRouter API with URL verification."""
     clean_doc = doc_query.strip()
     if clean_doc.lower().startswith("state e-district portal") or clean_doc.lower() == "generic":
         clean_doc = "Income Certificate"
@@ -263,9 +365,7 @@ def generate_dynamic_guide(doc_query: str = "Income Certificate", state_context:
     # Resolve verified live working government portal URL
     verified_portal_name, verified_portal_url = resolve_verified_portal(state_context)
 
-    api_key = get_openrouter_api_key()
-    if api_key:
-        prompt = f"""
+    prompt = f"""
 Generate a structured JSON guidance object for an Indian citizen requiring the document: "{clean_doc}".
 Selected State / Jurisdiction: "{state_context}"
 Language requested: "{language}" (Language code: en=English, hi=Hindi, ta=Tamil, te=Telugu, bn=Bengali).
@@ -292,7 +392,25 @@ Return EXACTLY a JSON object with this key structure:
   ]
 }}
 """
-        raw_llm_out = call_openrouter_api(prompt, api_key)
+    raw_llm_out = None
+
+    # 1. Try Google Gemini first (Main provider)
+    gemini_key = get_gemini_api_key()
+    if gemini_key:
+        sys_prompt = (
+            "You are Sahayak (सहायक), an Indian Government Document & State Procedure Expert. "
+            "Respond ONLY with valid JSON with no markdown code block markers or conversational preamble."
+        )
+        raw_llm_out = call_gemini_api(prompt, gemini_key, system_prompt=sys_prompt)
+        if not raw_llm_out:
+            logger.warning("Google Gemini guide generation failed, falling back to OpenRouter...")
+
+    # 2. Fallback to OpenRouter (Keep existing models intact)
+    if not raw_llm_out:
+        openrouter_key = get_openrouter_api_key()
+        if openrouter_key:
+            raw_llm_out = call_openrouter_api(prompt, openrouter_key)
+
         if raw_llm_out:
             try:
                 clean_json_str = re.sub(r'^```json\s*', '', raw_llm_out, flags=re.MULTILINE)

@@ -3,6 +3,7 @@ import requests
 import json
 import os
 import re
+from app.sahayak.guide_engine import get_gemini_api_key, get_openrouter_api_key
 
 logger = logging.getLogger("LocalPlanner")
 
@@ -24,10 +25,11 @@ def plan_action(context: dict, image: str = None, task: str = None) -> dict:
         if val and not (val.startswith('[') and val.endswith(']')):
             raw_pii_count += 1
 
-    api_key = os.getenv("OPENROUTER_API_KEY")
+    gemini_key = get_gemini_api_key()
+    openrouter_key = get_openrouter_api_key() or os.getenv("OPENROUTER_API_KEY")
     planned = None
 
-    if api_key and image:
+    if (gemini_key or openrouter_key) and image:
         system_prompt = (
             "You are PrivacyAgent, a server-side browser action planner. Analyze the user's task, "
             "sanitized screenshot, and sanitized DOM findings, then return ONE safest next action as JSON. "
@@ -53,94 +55,174 @@ def plan_action(context: dict, image: str = None, task: str = None) -> dict:
             
         clean_scan = {k: v for k, v in scan_info.items() if k != 'timestamp'}
         user_content = f"Task: {task or 'Analyze the page and determine the next safe action'}\n\nSanitized DOM findings:\n{json.dumps(clean_scan, separators=(',', ':'))}"
-        
-        models_to_try = [
-            "z-ai/glm-5.2:free",
-            "google/gemma-4-31b-it:free"
-        ]
 
-        for model_name in models_to_try:
-            payload = {
-                "model": model_name,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": system_prompt
-                    },
+        # 1. Try Google Gemini first (Main provider)
+        if gemini_key:
+            google_models = [
+                "gemini-flash-latest",
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash"
+            ]
+            raw_b64 = image
+            mime_type = "image/jpeg"
+            if image.startswith("data:"):
+                header, raw_b64 = image.split(";base64,", 1)
+                mime_type = header.replace("data:", "").strip() or "image/jpeg"
+
+            google_payload = {
+                "contents": [
                     {
                         "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": user_content
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": image
-                                }
-                            }
+                        "parts": [
+                            {"text": user_content},
+                            {"inline_data": {"mime_type": mime_type, "data": raw_b64}}
                         ]
                     }
-                ]
+                ],
+                "systemInstruction": {
+                    "parts": [{"text": system_prompt}]
+                },
+                "generationConfig": {
+                    "temperature": 0.2
+                }
             }
-            
-            try:
-                resp = requests.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json=payload,
-                    timeout=30
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    
-                    if "error" in data:
-                        logger.error(f"OpenRouter returned an error for {model_name}: {data['error']}")
-                        continue
+
+            for model_name in google_models:
+                try:
+                    resp = requests.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
+                        headers={
+                            "Content-Type": "application/json",
+                            "X-goog-api-key": gemini_key
+                        },
+                        json=google_payload,
+                        timeout=25
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        candidates = data.get("candidates", [])
+                        if candidates and "content" in candidates[0]:
+                            parts = candidates[0]["content"].get("parts", [])
+                            if parts and "text" in parts[0]:
+                                content = parts[0]["text"]
+                                match = re.search(r'\{[\s\S]*\}', content)
+                                if match:
+                                    content = match.group(0)
+                                ai_action = json.loads(content)
+                                action_type = ai_action.get("type") or ai_action.get("action") or "HIGHLIGHT"
+                                action_selector = ai_action.get("selector") or ai_action.get("target") or ""
+                                if action_selector and action_selector.startswith("text="):
+                                    action_selector = ""
+
+                                planned = {
+                                    "type": str(action_type).upper(),
+                                    "target_id": ai_action.get("target_id"),
+                                    "selector": action_selector,
+                                    "url": ai_action.get("url"),
+                                    "direction": ai_action.get("direction"),
+                                    "label": ai_action.get("label", "AI Action"),
+                                    "risk": str(ai_action.get("risk", "low")).lower(),
+                                    "reason": ai_action.get("reason", "Google Gemini planned action")
+                                }
+                                if "value" in ai_action:
+                                    planned["textValue"] = ai_action["value"]
+                                    planned["value"] = ai_action["value"]
+                                logger.info(f"Local planner successfully responded using Google Gemini model: {model_name}")
+                                break
+                    else:
+                        logger.warning(f"Google Gemini model {model_name} returned status {resp.status_code}")
+                except Exception as e:
+                    logger.warning(f"Failed to call Google Gemini {model_name}: {e}")
+
+        # 2. Fallback to OpenRouter (Keep all existing models intact)
+        if not planned and openrouter_key:
+            models_to_try = [
+                "z-ai/glm-5.2:free",
+                "google/gemma-4-31b-it:free"
+            ]
+
+            for model_name in models_to_try:
+                payload = {
+                    "model": model_name,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": system_prompt
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": user_content
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": image
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+                
+                try:
+                    resp = requests.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {openrouter_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json=payload,
+                        timeout=30
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
                         
-                    content = data["choices"][0]["message"]["content"]
-                    
-                    # Robustly extract JSON object using regex
-                    match = re.search(r'\{[\s\S]*\}', content)
-                    if match:
-                        content = match.group(0)
-                    
-                    ai_action = json.loads(content)
-                    
-                    action_type = ai_action.get("type") or ai_action.get("action") or "HIGHLIGHT"
-                    action_selector = ai_action.get("selector") or ai_action.get("target") or ""
-                    
-                    # Strip out hallucinated Playwright pseudo-selectors like "text=Login"
-                    if action_selector and action_selector.startswith("text="):
-                        # We can't use text= in standard querySelector, so just null it out
-                        # The extension will fall back to clicking next available control if no target_id is present
-                        action_selector = ""
-                    
-                    planned = {
-                        "type": str(action_type).upper(),
-                        "target_id": ai_action.get("target_id"),
-                        "selector": action_selector,
-                        "url": ai_action.get("url"),
-                        "direction": ai_action.get("direction"),
-                        "label": ai_action.get("label", "AI Action"),
-                        "risk": str(ai_action.get("risk", "low")).lower(),
-                        "reason": ai_action.get("reason", "AI planned action")
-                    }
-                    if "value" in ai_action:
-                        planned["textValue"] = ai_action["value"]
-                        planned["value"] = ai_action["value"]
-                    
-                    break # Success, stop trying other models
-                else:
-                    logger.error(f"OpenRouter API failed for {model_name}: {resp.text}")
-                    with open("error.log", "a") as f: f.write(f"OpenRouter HTTP Error ({model_name}): {resp.status_code} {resp.text}\n")
-            except Exception as e:
-                logger.error(f"Failed to parse AI response for {model_name}: {e}")
-                with open("error.log", "a") as f: f.write(f"Exception calling OpenRouter ({model_name}): {type(e).__name__}: {e}\n")
+                        if "error" in data:
+                            logger.error(f"OpenRouter returned an error for {model_name}: {data['error']}")
+                            continue
+                            
+                        content = data["choices"][0]["message"]["content"]
+                        
+                        # Robustly extract JSON object using regex
+                        match = re.search(r'\{[\s\S]*\}', content)
+                        if match:
+                            content = match.group(0)
+                        
+                        ai_action = json.loads(content)
+                        
+                        action_type = ai_action.get("type") or ai_action.get("action") or "HIGHLIGHT"
+                        action_selector = ai_action.get("selector") or ai_action.get("target") or ""
+                        
+                        # Strip out hallucinated Playwright pseudo-selectors like "text=Login"
+                        if action_selector and action_selector.startswith("text="):
+                            action_selector = ""
+                        
+                        planned = {
+                            "type": str(action_type).upper(),
+                            "target_id": ai_action.get("target_id"),
+                            "selector": action_selector,
+                            "url": ai_action.get("url"),
+                            "direction": ai_action.get("direction"),
+                            "label": ai_action.get("label", "AI Action"),
+                            "risk": str(ai_action.get("risk", "low")).lower(),
+                            "reason": ai_action.get("reason", "AI planned action")
+                        }
+                        if "value" in ai_action:
+                            planned["textValue"] = ai_action["value"]
+                            planned["value"] = ai_action["value"]
+                        
+                        break # Success, stop trying other models
+                    else:
+                        logger.error(f"OpenRouter API failed for {model_name}: {resp.text}")
+                        with open("error.log", "a") as f: f.write(f"OpenRouter HTTP Error ({model_name}): {resp.status_code} {resp.text}\n")
+                except Exception as e:
+                    logger.error(f"Failed to parse AI response for {model_name}: {e}")
+                    with open("error.log", "a") as f: f.write(f"Exception calling OpenRouter ({model_name}): {type(e).__name__}: {e}\n")
+
 
     if not planned:
         # Fallback to simple heuristic

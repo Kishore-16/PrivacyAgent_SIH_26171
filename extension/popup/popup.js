@@ -585,7 +585,9 @@ document.addEventListener('DOMContentLoaded', () => {
           await sendTabMessage(activeTab, {
             type: 'SAHAYAK_ATTACH_FILE',
             selector: pkTargetSelector,
-            fileName: pkSelectedFileObj.name
+            fileName: pkSelectedFileObj.name,
+            fileType: pkSelectedFileObj.type,
+            fileData: base64Data
           });
         }
 
@@ -815,6 +817,7 @@ document.addEventListener('DOMContentLoaded', () => {
         popupPendingStep = { stepRes, tabId: activeTab.id };
         if (popupHitlReason) popupHitlReason.textContent = stepRes.action.reason;
         if (popupHitlPromptText) popupHitlPromptText.textContent = stepRes.hitl_prompt || stepRes.action.label;
+        if (popupBtnApproveHitl) popupBtnApproveHitl.textContent = stepRes.action.type === 'WAIT_FOR_USER' ? 'Resume Automation' : 'Approve Action';
         if (popupHitlModal) popupHitlModal.classList.remove('hidden');
         return;
       }
@@ -868,14 +871,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // Chat answer — display cleanly as a message, not a step card
     if (stepRes.action?.label === 'Chat Answer' && (stepRes.completed || stepRes.action?.type === 'COMPLETE')) {
       appendPopupMsg('system', stepRes.status_summary);
-      popupTaskId = null;
+      popupGoal += `\nAgent Output: ${stepRes.status_summary}`;
       return;
     }
 
     // Task complete (non-chat)
     if (stepRes.completed || stepRes.action?.type === 'COMPLETE') {
       appendPopupMsg('system', `🎉 Task Complete! ${stepRes.status_summary}`);
-      popupTaskId = null;
+      popupGoal += `\nAgent Output: Task Complete! ${stepRes.status_summary}`;
       return;
     }
 
@@ -931,8 +934,14 @@ document.addEventListener('DOMContentLoaded', () => {
       if (popupPendingStep) {
         const { tabId, stepRes } = popupPendingStep;
         popupPendingStep = null;
-        appendPopupMsg('system', '✅ High-risk action approved by user. Executing...');
-        await executeStepAndAdvance(tabId, stepRes);
+        if (stepRes.action.type === 'WAIT_FOR_USER') {
+          appendPopupMsg('system', '🔄 User manually intervened. Resuming automation...');
+          popupStepCount++;
+          setTimeout(runNextPopupAgentStep, 1500);
+        } else {
+          appendPopupMsg('system', '✅ High-risk action approved by user. Executing...');
+          await executeStepAndAdvance(tabId, stepRes);
+        }
       }
     };
   }
@@ -956,28 +965,23 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!val) return;
       popupTaskInput.value = '';
       
-      // Clear state for new task
-      popupTaskId = null;
-      popupChatViewport.innerHTML = `
-        <div class="message system-msg">
-          <div class="msg-avatar">🤖</div>
-          <div class="msg-content">
-            <strong>Autonomous Privacy Assistant</strong>
-            <p>Tell me what to do (e.g. <em>"Fill application form"</em> or <em>"Submit deposit to account"</em>).</p>
-            <span class="privacy-note">🔒 On-device privacy firewall active. Raw data masked locally.</span>
-          </div>
-        </div>
-      `;
-      saveAgentState();
-      
-      startPopupAgentTask(val);
+      if (popupTaskId) {
+        // Continue existing task
+        popupGoal += `\nUser Input: ${RedactionEngine.sanitizeText(val)}`;
+        appendPopupMsg('user', val);
+        if (!popupAgentRunning) {
+          runNextPopupAgentStep();
+        }
+      } else {
+        startPopupAgentTask(val);
+      }
     };
   }
-
   // loadAgentState(); // Disabled: Start a fresh conversation every time popup opens
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
     chrome.storage.local.remove(['agentState']);
   }
+
   
   checkHealth().then(() => runScan().catch(() => {}));
 

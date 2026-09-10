@@ -5,7 +5,7 @@ from urllib.parse import quote_plus
 from typing import Dict, Any, List, Optional
 from app.agent.schema import AgentStepRequest, AgentStepResponse, ActionModel
 from app.agent.safety import evaluate_action_risk
-from app.sahayak.guide_engine import call_agent_chat, get_openrouter_api_key
+from app.sahayak.guide_engine import call_agent_chat, get_openrouter_api_key, get_gemini_api_key
 from app.agent.compressor import compress_agent_state
 
 logger = logging.getLogger("AgentPlanner")
@@ -67,7 +67,7 @@ previous actions and their outcomes, and optionally a redacted screenshot.
 
 ## AVAILABLE ACTION TYPES
 - click: Click a DOM element by selector/agent-id
-- click_coordinate: Click at viewport (x,y) for canvas/SVG/visual elements
+- click_coordinate: Click at viewport (x,y) for canvas/SVG/visual elements. If the provided DOM nodes are missing elements (like seat maps) or previous DOM clicks failed, YOU MUST visually analyze the provided screenshot and output this intent with the exact x and y coordinates.
 - type: Type text into an input field (no Enter key)
 - type_and_enter: Type text and press Enter to submit
 - type_and_select: Type text, wait for autocomplete suggestions, and click the matching option
@@ -79,6 +79,7 @@ previous actions and their outcomes, and optionally a redacted screenshot.
 - dismiss_modal: Close the currently active modal/popup/error dialog
 - local_autofill: Fill a form field from the user's saved profile
 - chat: Answer a conversational question (no browser action needed)
+- wait_for_user: Pauses the automation to let the human user perform the next step manually (e.g. solving a captcha, picking an unselectable element).
 - complete: The task is finished
 
 ## RESPONSE SCHEMA
@@ -106,9 +107,9 @@ Return EXACTLY this JSON structure (no markdown, no explanation outside JSON):
 - For "click"/"type"/"select": Use ONLY selectors from the provided DOM nodes. NEVER fabricate selectors.
 - If DOM nodes have text like [NAME], [EMAIL], [PASSWORD] — these are REDACTED sensitive fields.
   Do NOT click or interact with them.
-- If no relevant interactive elements exist and the goal cannot be advanced, return intent "complete".
+- If you are completely stuck and cannot advance automatically, return intent "wait_for_user" with a thought explaining what the user needs to do manually.
 - CRITICAL: Review your action_history. If you have already completed a step (e.g., searching for a movie), DO NOT repeat it. Move to the next logical step. NEVER repeat the exact same action.
-- If you are stuck in a loop and cannot advance, return intent "complete" with thought "Task stuck, stopping."
+- If you are stuck in a loop and cannot advance even with manual intervention, return intent "complete" with thought "Task stuck, stopping."
 """
 
 
@@ -241,14 +242,95 @@ def _format_page_alerts(alerts: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _call_google_gemini_agent(user_prompt: str, screenshot: Optional[str], api_key: str) -> Optional[str]:
+    """Call Google Gemini API (Main Provider) with optional screenshot inline_data and systemInstruction."""
+    import urllib.request
+
+    google_models = [
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-pro-latest"
+    ]
+
+    parts: List[Dict[str, Any]] = [{"text": user_prompt}]
+
+    if screenshot:
+        raw_b64 = screenshot
+        mime_type = "image/png"
+        if "data:" in screenshot and ";base64," in screenshot:
+            header, raw_b64 = screenshot.split(";base64,", 1)
+            mime_type = header.replace("data:", "").strip() or "image/png"
+
+        parts.append({
+            "inline_data": {
+                "mime_type": mime_type,
+                "data": raw_b64
+            }
+        })
+
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": parts
+            }
+        ],
+        "systemInstruction": {
+            "parts": [{"text": AGENT_SYSTEM_PROMPT}]
+        },
+        "generationConfig": {
+            "temperature": 0.2
+        }
+    }
+
+    payload_bytes = json.dumps(payload).encode('utf-8')
+
+    for m in google_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "X-goog-api-key": api_key
+        }
+
+        try:
+            req = urllib.request.Request(
+                url,
+                data=payload_bytes,
+                headers=headers,
+                method='POST'
+            )
+            with urllib.request.urlopen(req, timeout=25) as response:
+                if response.status == 200:
+                    resp_body = response.read().decode('utf-8')
+                    resp_json = json.loads(resp_body)
+                    candidates = resp_json.get("candidates", [])
+                    if candidates and "content" in candidates[0]:
+                        res_parts = candidates[0]["content"].get("parts", [])
+                        if res_parts and "text" in res_parts[0]:
+                            content = res_parts[0]["text"]
+                            if content:
+                                logger.info(f"Agent LLM responded using Google Gemini model: {m}")
+                                return content
+                else:
+                    logger.warning(f"Google Gemini model '{m}' returned status {response.status}")
+        except Exception as err:
+            logger.warning(f"Google Gemini attempt with model '{m}' failed: {err}")
+
+    return None
+
+
 def _call_agent_llm(goal: str, url: str, dom_summary: str, step_number: int,
                      screenshot: str = None, action_history: str = "",
                      page_alerts: str = "", visible_text: str = "",
                      last_action_result: str = None) -> Optional[Dict]:
-    """Call the LLM to decide the next agent action. Returns parsed JSON dict or None."""
-    api_key = get_openrouter_api_key()
-    if not api_key:
-        logger.warning("No OpenRouter API key available for agent LLM call")
+    """Call the LLM to decide the next agent action. Tries Google Gemini first, falls back to OpenRouter."""
+    gemini_key = get_gemini_api_key()
+    openrouter_key = get_openrouter_api_key()
+
+    if not gemini_key and not openrouter_key:
+        logger.warning("No Google Gemini or OpenRouter API key available for agent LLM call")
         return None
 
     # Build rich user prompt with all context
@@ -276,49 +358,49 @@ def _call_agent_llm(goal: str, url: str, dom_summary: str, step_number: int,
 
     user_prompt = "\n\n".join(sections)
 
-    # Build the messages array — use multimodal format if screenshot is available
-    if screenshot:
-        # Ensure screenshot has data URI prefix
-        if not screenshot.startswith("data:"):
-            screenshot = f"data:image/png;base64,{screenshot}"
+    raw = None
 
-        user_message = {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": user_prompt},
-                {"type": "image_url", "image_url": {"url": screenshot}}
+    # 1. Try Google Gemini first (Main provider)
+    if gemini_key:
+        raw = _call_google_gemini_agent(user_prompt, screenshot, gemini_key)
+        if not raw:
+            logger.warning("Google Gemini failed for agent step, falling back to OpenRouter...")
+
+    # 2. Fallback to OpenRouter (Keep all existing models intact)
+    if not raw and openrouter_key:
+        # Build the messages array — use multimodal format if screenshot is available
+        if screenshot:
+            screenshot_url = screenshot if screenshot.startswith("data:") else f"data:image/png;base64,{screenshot}"
+            user_message = {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_prompt},
+                    {"type": "image_url", "image_url": {"url": screenshot_url}}
+                ]
+            }
+        else:
+            user_message = {"role": "user", "content": user_prompt}
+
+        messages = [
+            {"role": "system", "content": AGENT_SYSTEM_PROMPT},
+            user_message
+        ]
+
+        if screenshot:
+            models_to_try = [
+                "google/gemini-2.0-pro-exp-02-05:free",
+                "google/gemini-2.0-flash-exp:free",
+                "qwen/qwen-2-vl-7b-instruct:free"
             ]
-        }
-    else:
-        user_message = {"role": "user", "content": user_prompt}
+        else:
+            models_to_try = [
+                "meta-llama/llama-3.3-70b-instruct:free",
+                "google/gemini-2.0-flash-lite-preview-02-05:free",
+                "qwen/qwen-2.5-coder-32b-instruct:free"
+            ]
 
-    messages = [
-        {"role": "system", "content": AGENT_SYSTEM_PROMPT},
-        user_message
-    ]
+        raw = _call_llm_with_models(messages, models_to_try, openrouter_key)
 
-    # Model priority: vision-capable models first when screenshot is available
-    if screenshot:
-        models_to_try = [
-            "google/gemma-4-31b-it:free",
-            "z-ai/glm-5.2:free",
-            "nvidia/nemotron-3.5-lightning:free",
-            "nvidia/nemotron-3-ultra-550b-a55b:free",
-            "minimax/minimax-m3:free",
-        ]
-    else:
-        models_to_try = [
-            "google/gemma-4-31b-it:free",
-            "z-ai/glm-5.2:free",
-            "nvidia/nemotron-3.5-lightning:free",
-            "liquid/lfm-2.5-2.6b:free",
-            "google/gemma-4-26b-a4b-it:free",
-            "nvidia/nemotron-3-ultra-550b-a55b:free",
-            "thinkingmachines/inkling-small:free",
-            "minimax/minimax-m3:free",
-        ]
-
-    raw = _call_llm_with_models(messages, models_to_try, api_key)
     if not raw:
         return None
 
@@ -424,7 +506,7 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
     if intent == "navigate":
         url = llm_result.get("url", "")
         if not url:
-            return _fallback_complete(req, "Could not determine URL to navigate to.")
+            return _wait_for_user_fallback(req, "Could not determine URL to navigate to.")
         return AgentStepResponse(
             task_id=req.task_id,
             step_number=req.step_number,
@@ -445,7 +527,7 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
     if intent == "search":
         query = llm_result.get("url", "")
         if not query:
-            return _fallback_complete(req, "Could not determine search query.")
+            return _wait_for_user_fallback(req, "Could not determine search query.")
         search_url = f"https://www.google.com/search?q={quote_plus(query)}"
         return AgentStepResponse(
             task_id=req.task_id,
@@ -469,7 +551,7 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
         label = llm_result.get("target_label", "Element")
         
         if not selector:
-            return _fallback_complete(req, "CLICK requires a valid target_selector.")
+            return _wait_for_user_fallback(req, "I wanted to click something but couldn't find a valid target_selector.")
 
         risk_level, hitl_req, safety_reason = evaluate_action_risk("CLICK", label, "", req.url or "", None)
         
@@ -498,16 +580,16 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
         label = llm_result.get("target_label", "Coordinate click")
 
         if x is None or y is None:
-            return _fallback_complete(req, "CLICK_COORDINATE requires valid x,y coordinates.")
+            return _wait_for_user_fallback(req, "I wanted to click coordinates but they were invalid.")
 
         try:
             x = int(x)
             y = int(y)
         except (TypeError, ValueError):
-            return _fallback_complete(req, f"Invalid coordinates: x={x}, y={y}")
+            return _wait_for_user_fallback(req, f"Invalid coordinates: x={x}, y={y}")
 
         if x < 0 or y < 0 or x > 4000 or y > 4000:
-            return _fallback_complete(req, f"Coordinates out of bounds: x={x}, y={y}")
+            return _wait_for_user_fallback(req, f"Coordinates out of bounds: x={x}, y={y}")
 
         risk_level, hitl_req, safety_reason = evaluate_action_risk("CLICK_COORDINATE", label, "", req.url or "", None)
 
@@ -665,7 +747,7 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
         label = llm_result.get("target_label", "Close button")
 
         if not selector:
-            return _fallback_complete(req, "DISMISS_MODAL requires a valid target_selector.")
+            return _wait_for_user_fallback(req, "I tried to dismiss a modal but couldn't find the close button.")
 
         return AgentStepResponse(
             task_id=req.task_id,
@@ -684,10 +766,46 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
             status_summary=format_status("Dismissing modal/popup...")
         )
 
+    # --- WAIT_FOR_USER ---
+    if intent == "wait_for_user":
+        return AgentStepResponse(
+            task_id=req.task_id,
+            step_number=req.step_number,
+            thought=thought,
+            action=ActionModel(
+                type="WAIT_FOR_USER",
+                label="Manual Intervention Required",
+                risk="low",
+                reason=reason
+            ),
+            requires_hitl=True,
+            hitl_prompt=thought or "Please perform the next step manually, then click Resume Automation.",
+            completed=False,
+            status_summary=format_status("Waiting for user intervention...")
+        )
+
     # --- COMPLETE / DEFAULT ---
     summary = llm_result.get("chat_answer") or llm_result.get("thought") or "Task completed."
     return _fallback_complete(req, format_status(summary))
 
+
+def _wait_for_user_fallback(req: AgentStepRequest, reason: str) -> AgentStepResponse:
+    """Return a WAIT_FOR_USER response instead of halting the task."""
+    return AgentStepResponse(
+        task_id=req.task_id,
+        step_number=req.step_number,
+        thought=f"I encountered an issue: {reason}",
+        action=ActionModel(
+            type="WAIT_FOR_USER",
+            label="Manual Intervention Required",
+            risk="low",
+            reason=reason
+        ),
+        requires_hitl=True,
+        hitl_prompt=f"{reason}. Please resolve this manually, then click Resume Automation.",
+        completed=False,
+        status_summary="Waiting for user intervention..."
+    )
 
 def _fallback_complete(req: AgentStepRequest, summary: str) -> AgentStepResponse:
     """Return a clean COMPLETE response."""
@@ -826,7 +944,21 @@ def _keyword_fallback(req: AgentStepRequest) -> AgentStepResponse:
                 status_summary="Awaiting confirmation for financial action."
             )
 
-    return _fallback_complete(req, "I understand your request but I'm unable to determine the next step without AI assistance. Please ensure the local server is running with a valid API key.")
+    return AgentStepResponse(
+        task_id=req.task_id,
+        step_number=step_num,
+        thought="I couldn't find an obvious safe action to take automatically.",
+        action=ActionModel(
+            type="WAIT_FOR_USER",
+            label="Manual Intervention Required",
+            risk="low",
+            reason="Automation stuck"
+        ),
+        requires_hitl=True,
+        hitl_prompt="I am unable to determine the next step automatically. Please perform the action manually, then click Resume Automation.",
+        completed=False,
+        status_summary="Waiting for user intervention..."
+    )
 
 
 # ---------------------------------------------------------------------------

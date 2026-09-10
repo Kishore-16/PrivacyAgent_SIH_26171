@@ -669,12 +669,40 @@ window.PrivacyAgentExecutor = (() => {
         });
       } else if (msg.type === 'AGENT_EXECUTE_ACTION') {
         Promise.resolve(executeAction(msg.action)).then(sendResponse).catch(err => sendResponse({ok: false, error: err.message}));
+      } else if (msg.type === 'SAHAYAK_TRIGGER') {
+        if (window.SahayakDetector) {
+          window.SahayakDetector.handleMissingDocument().then(res => sendResponse(res || {ok: true})).catch(err => sendResponse({ok: false, error: err.message}));
+        } else {
+          sendResponse({ok: false, error: 'SahayakDetector not found'});
+        }
       } else if (msg.type === 'SAHAYAK_ATTACH_FILE') {
         let el = msg.selector ? document.querySelector(msg.selector) : document.querySelector('input[type="file"]');
         if (el) {
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
           el.style.outline = '3px solid #10b981';
           setTimeout(() => { el.style.outline = ''; }, 3000);
+          
+          if (msg.fileData) {
+            try {
+              const arr = msg.fileData.split(',');
+              const mime = arr[0].match(/:(.*?);/)[1];
+              const bstr = atob(arr[1]);
+              let n = bstr.length;
+              const u8arr = new Uint8Array(n);
+              while(n--){
+                u8arr[n] = bstr.charCodeAt(n);
+              }
+              const file = new File([u8arr], msg.fileName || 'document', { type: msg.fileType || mime });
+              const dt = new DataTransfer();
+              dt.items.add(file);
+              el.files = dt.files;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            } catch (e) {
+              console.error('Failed to attach file:', e);
+            }
+          }
+          
           sendResponse({ ok: true, detail: `Attached file '${msg.fileName}' to element` });
         } else {
           sendResponse({ ok: false, error: 'File input element not found' });

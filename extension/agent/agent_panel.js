@@ -743,8 +743,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (stepResult.completed || stepResult.action?.type === 'COMPLETE') {
       setStatus('Completed');
       appendMessage('system', `🎉 Task Complete! ${stepResult.status_summary}`);
+      currentGoal += `\nAgent Output: Task Complete! ${stepResult.status_summary}`;
       addToHistory(stepCounter, 'COMPLETE', 'success', stepResult.thought, preActionUrl);
-      currentTaskId = null;
       return;
     }
 
@@ -873,6 +873,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const val = taskInput.value.trim();
     if (!val) return;
     taskInput.value = '';
-    startAgentTask(val);
+    
+    if (currentTaskId) {
+      // Continue existing task
+      currentGoal += `\nUser Input: ${val}`;
+      appendMessage('user', val);
+      // Ensure we trigger the next step
+      runNextStep();
+    } else {
+      startAgentTask(val);
+    }
   });
 });

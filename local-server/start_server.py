@@ -10,9 +10,10 @@ if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
 # Load .env if present
-env_file = SERVER_DIR.parent / ".env"
-if env_file.exists():
-    load_dotenv(env_file)
+for env_path in [SERVER_DIR / ".env", SERVER_DIR.parent / ".env"]:
+    if env_path.exists():
+        load_dotenv(env_path)
+
 
 HOST = os.getenv("PRIVACYAGENT_HOST", "127.0.0.1")
 PORT = int(os.getenv("PRIVACYAGENT_PORT", "8000"))
