@@ -51,6 +51,10 @@ window.PrivacyAgentExecutor = (() => {
     const elements = root.querySelectorAll(INTERACTIVE_SELECTOR);
 
     elements.forEach((el) => {
+      if (el.closest && el.closest('#sahayak-modal-overlay, .sahayak-modal-overlay')) {
+        return; // Exclude Sahayak internal UI elements from AI agent DOM nodes
+      }
+
       const agentId = _assignAgentId(el, prefix);
       const rect = el.getBoundingClientRect();
       const isFileInput = el.tagName.toLowerCase() === 'input' && el.type === 'file';
@@ -671,7 +675,8 @@ window.PrivacyAgentExecutor = (() => {
         Promise.resolve(executeAction(msg.action)).then(sendResponse).catch(err => sendResponse({ok: false, error: err.message}));
       } else if (msg.type === 'SAHAYAK_TRIGGER') {
         if (window.SahayakDetector) {
-          window.SahayakDetector.handleMissingDocument().then(res => sendResponse(res || {ok: true})).catch(err => sendResponse({ok: false, error: err.message}));
+          let targetEl = msg.selector ? (document.querySelector(msg.selector) || document.querySelector(`[data-agent-id="${msg.selector}"]`)) : null;
+          window.SahayakDetector.handleMissingDocument(targetEl).then(res => sendResponse(res || {ok: true})).catch(err => sendResponse({ok: false, error: err.message}));
         } else {
           sendResponse({ok: false, error: 'SahayakDetector not found'});
         }

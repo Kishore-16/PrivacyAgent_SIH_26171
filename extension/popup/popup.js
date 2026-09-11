@@ -624,7 +624,23 @@ document.addEventListener('DOMContentLoaded', () => {
   let popupLastActionResult = null;
   let popupLastPageFingerprint = null;
   let popupAgentRunning = false;
+  let isSahayakActiveInPopup = false;
   const SERVER_AGENT_BASE = 'http://127.0.0.1:8000/agent';
+
+  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+      if (msg.type === 'SAHAYAK_FILE_ATTACHED') {
+        isSahayakActiveInPopup = false;
+        appendPopupMsg('system', `✅ Sahayak attached document '${msg.fileName}' to form.`);
+        closeSahayakPopup();
+        if (popupTaskId) {
+          popupStepCount++;
+          appendPopupMsg('system', '▶️ Resuming autonomous agent form-filling automation...');
+          setTimeout(runNextPopupAgentStep, 1200);
+        }
+      }
+    });
+  }
 
   function saveAgentState() {
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
@@ -716,7 +732,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function runNextPopupAgentStep() {
-    if (!popupTaskId || popupAgentRunning) return;
+    if (!popupTaskId || popupAgentRunning || isSahayakActiveInPopup) return;
     popupAgentRunning = true;
 
     try {
@@ -750,15 +766,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isUploadIntent) {
       const fileInputNode = (domNodes || []).find(n => n.tag === 'input' && n.type === 'file');
       if (fileInputNode) {
+        isSahayakActiveInPopup = true;
         const docName = fileInputNode.text || fileInputNode.placeholder || 'Income Certificate';
         appendPopupMsg('system', `📄 Sahayak Assistant activated for '${docName}'.`);
+        appendPopupMsg('system', '⏸️ Agent paused. No background scanning or tasks will run while Sahayak is active.');
         openSahayakPopup(docName, fileInputNode.selector);
-
-        // Trigger webpage popup overlay as well
-        try {
-          await sendTabMessage(activeTab, { type: 'SAHAYAK_TRIGGER' });
-        } catch (e) {}
-
         return;
       }
     }
@@ -892,6 +904,18 @@ document.addEventListener('DOMContentLoaded', () => {
       setTimeout(() => {
         runNextPopupAgentStep();
       }, 4000);
+      return;
+    }
+
+    // Sahayak Trigger action
+    if (stepRes.action?.type === 'SAHAYAK_TRIGGER' || stepRes.action?.type === 'UPLOAD_DOCUMENT') {
+      isSahayakActiveInPopup = true;
+      appendPopupMsg('system', '📄 Required document field detected. Activating Sahayak Assistant...');
+      const docType = stepRes.action.label || 'generic';
+      const selector = stepRes.action.selector;
+      openSahayakPopup(docType, selector);
+      recordActionOutcome(stepRes.action, 'success', 'Sahayak Assistant activated', '');
+      appendPopupMsg('system', '⏸️ Agent paused. No background scanning or tasks will run while Sahayak is active.');
       return;
     }
 

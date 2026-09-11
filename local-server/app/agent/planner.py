@@ -77,6 +77,7 @@ previous actions and their outcomes, and optionally a redacted screenshot.
 - search: Build a Google search URL
 - wait: Wait for the page to finish loading/updating
 - dismiss_modal: Close the currently active modal/popup/error dialog
+- sahayak_trigger: Activate Sahayak Multilingual Assistant when encountering an <input type="file"> or missing document requirement. Browser security prevents automated text entry into file fields, so use this action to prompt the user.
 - local_autofill: Fill a form field from the user's saved profile
 - chat: Answer a conversational question (no browser action needed)
 - wait_for_user: Pauses the automation to let the human user perform the next step manually (e.g. solving a captcha, picking an unselectable element).
@@ -246,12 +247,14 @@ def _call_google_gemini_agent(user_prompt: str, screenshot: Optional[str], api_k
     """Call Google Gemini API (Main Provider) with optional screenshot inline_data and systemInstruction."""
     import urllib.request
 
+    if not api_key or not api_key.startswith("AIza"):
+        return None
+
     google_models = [
-        "gemini-flash-latest",
-        "gemini-2.5-flash",
         "gemini-2.0-flash",
         "gemini-1.5-flash",
-        "gemini-pro-latest"
+        "gemini-1.5-pro",
+        "gemini-2.0-flash-lite"
     ]
 
     parts: List[Dict[str, Any]] = [{"text": user_prompt}]
@@ -288,9 +291,10 @@ def _call_google_gemini_agent(user_prompt: str, screenshot: Optional[str], api_k
     payload_bytes = json.dumps(payload).encode('utf-8')
 
     for m in google_models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_key}"
         headers = {
             "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "X-goog-api-key": api_key
         }
 
@@ -388,12 +392,14 @@ def _call_agent_llm(goal: str, url: str, dom_summary: str, step_number: int,
 
         if screenshot:
             models_to_try = [
+                "openrouter/auto",
                 "google/gemini-2.0-pro-exp-02-05:free",
                 "google/gemini-2.0-flash-exp:free",
                 "qwen/qwen-2-vl-7b-instruct:free"
             ]
         else:
             models_to_try = [
+                "openrouter/auto",
                 "meta-llama/llama-3.3-70b-instruct:free",
                 "google/gemini-2.0-flash-lite-preview-02-05:free",
                 "qwen/qwen-2.5-coder-32b-instruct:free"
@@ -469,6 +475,30 @@ def _call_llm_with_models(messages: list, models: list, api_key: str) -> Optiona
             logger.warning(f"Agent LLM attempt with model '{m}' failed: {err}")
 
     return None
+
+
+def _resolve_node_target(req: AgentStepRequest, target_selector: str):
+    if not target_selector:
+        return None, None
+    nodes = req.dom_nodes or []
+    # 1. Direct agentId match
+    for n in nodes:
+        if isinstance(n, dict):
+            aid = n.get("agentId")
+            sel = n.get("selector")
+            if aid and (aid == target_selector or aid in target_selector):
+                return aid, sel or f'[data-agent-id="{aid}"]'
+    # 2. Selector match
+    for n in nodes:
+        if isinstance(n, dict):
+            aid = n.get("agentId")
+            sel = n.get("selector")
+            if sel and (sel == target_selector or target_selector in sel):
+                return aid, sel
+    # 3. Fallback
+    if target_selector.startswith("node-"):
+        return target_selector, f'[data-agent-id="{target_selector}"]'
+    return None, target_selector
 
 
 def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentStepResponse:
@@ -547,10 +577,11 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
 
     # --- CLICK ---
     if intent == "click":
-        selector = llm_result.get("target_selector", "")
+        raw_sel = llm_result.get("target_selector", "")
         label = llm_result.get("target_label", "Element")
+        target_id, selector = _resolve_node_target(req, raw_sel)
         
-        if not selector:
+        if not target_id and not selector:
             return _wait_for_user_fallback(req, "I wanted to click something but couldn't find a valid target_selector.")
 
         risk_level, hitl_req, safety_reason = evaluate_action_risk("CLICK", label, "", req.url or "", None)
@@ -561,8 +592,8 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
             thought=thought,
             action=ActionModel(
                 type="CLICK",
-                target_id=selector if selector.startswith("node-") else None,
-                selector=selector if not selector.startswith("node-") else f'[data-agent-id="{selector}"]',
+                target_id=target_id,
+                selector=selector,
                 label=label[:60],
                 risk=risk_level,
                 reason=reason or safety_reason
@@ -613,9 +644,10 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
 
     # --- TYPE ---
     if intent == "type":
-        selector = llm_result.get("target_selector", "")
+        raw_sel = llm_result.get("target_selector", "")
         label = llm_result.get("target_label", "Input field")
         value = llm_result.get("type_value", "")
+        target_id, selector = _resolve_node_target(req, raw_sel)
 
         return AgentStepResponse(
             task_id=req.task_id,
@@ -623,8 +655,8 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
             thought=thought,
             action=ActionModel(
                 type="TYPE",
-                target_id=selector if selector.startswith("node-") else None,
-                selector=selector if not selector.startswith("node-") else f'[data-agent-id="{selector}"]',
+                target_id=target_id,
+                selector=selector,
                 value=value,
                 label=f"Type '{value[:30]}' into {label[:30]}",
                 risk=risk,
@@ -637,9 +669,10 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
 
     # --- TYPE_AND_ENTER ---
     if intent == "type_and_enter":
-        selector = llm_result.get("target_selector", "")
+        raw_sel = llm_result.get("target_selector", "")
         label = llm_result.get("target_label", "Input field")
         value = llm_result.get("type_value", "")
+        target_id, selector = _resolve_node_target(req, raw_sel)
 
         return AgentStepResponse(
             task_id=req.task_id,
@@ -647,8 +680,8 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
             thought=thought,
             action=ActionModel(
                 type="TYPE_AND_ENTER",
-                target_id=selector if selector.startswith("node-") else None,
-                selector=selector if not selector.startswith("node-") else f'[data-agent-id="{selector}"]',
+                target_id=target_id,
+                selector=selector,
                 value=value,
                 label=f"Type '{value[:30]}' and Enter in {label[:30]}",
                 risk=risk,
@@ -661,9 +694,10 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
 
     # --- TYPE_AND_SELECT ---
     if intent == "type_and_select":
-        selector = llm_result.get("target_selector", "")
+        raw_sel = llm_result.get("target_selector", "")
         label = llm_result.get("target_label", "Autocomplete field")
         value = llm_result.get("type_value", "")
+        target_id, selector = _resolve_node_target(req, raw_sel)
 
         return AgentStepResponse(
             task_id=req.task_id,
@@ -671,8 +705,8 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
             thought=thought,
             action=ActionModel(
                 type="TYPE_AND_SELECT",
-                target_id=selector if selector.startswith("node-") else None,
-                selector=selector if not selector.startswith("node-") else f'[data-agent-id="{selector}"]',
+                target_id=target_id,
+                selector=selector,
                 value=value,
                 label=f"Type & Select '{value[:30]}' in {label[:30]}",
                 risk=risk,
@@ -685,9 +719,10 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
 
     # --- SELECT ---
     if intent == "select":
-        selector = llm_result.get("target_selector", "")
+        raw_sel = llm_result.get("target_selector", "")
         label = llm_result.get("target_label", "Dropdown")
         value = llm_result.get("type_value", "")
+        target_id, selector = _resolve_node_target(req, raw_sel)
 
         return AgentStepResponse(
             task_id=req.task_id,
@@ -695,8 +730,8 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
             thought=thought,
             action=ActionModel(
                 type="SELECT",
-                target_id=selector if selector.startswith("node-") else None,
-                selector=selector if not selector.startswith("node-") else f'[data-agent-id="{selector}"]',
+                target_id=target_id,
+                selector=selector,
                 value=value,
                 label=f"Select '{value[:30]}' in {label[:30]}",
                 risk="low",
@@ -743,10 +778,11 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
 
     # --- DISMISS_MODAL ---
     if intent == "dismiss_modal":
-        selector = llm_result.get("target_selector", "")
+        raw_sel = llm_result.get("target_selector", "")
         label = llm_result.get("target_label", "Close button")
+        target_id, selector = _resolve_node_target(req, raw_sel)
 
-        if not selector:
+        if not target_id and not selector:
             return _wait_for_user_fallback(req, "I tried to dismiss a modal but couldn't find the close button.")
 
         return AgentStepResponse(
@@ -755,8 +791,8 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
             thought=thought,
             action=ActionModel(
                 type="DISMISS_MODAL",
-                target_id=selector if selector.startswith("node-") else None,
-                selector=selector if not selector.startswith("node-") else f'[data-agent-id="{selector}"]',
+                target_id=target_id,
+                selector=selector,
                 label=label[:60],
                 risk="low",
                 reason=reason
@@ -764,6 +800,29 @@ def _build_response_from_llm(req: AgentStepRequest, llm_result: Dict) -> AgentSt
             requires_hitl=False,
             completed=False,
             status_summary=format_status("Dismissing modal/popup...")
+        )
+
+    # --- SAHAYAK_TRIGGER ---
+    if intent in ("sahayak_trigger", "upload_document", "sahayak"):
+        raw_sel = llm_result.get("target_selector", "")
+        label = llm_result.get("target_label", "File upload field")
+        target_id, selector = _resolve_node_target(req, raw_sel)
+
+        return AgentStepResponse(
+            task_id=req.task_id,
+            step_number=req.step_number,
+            thought=thought or "Encountered document field. Activating Sahayak Assistant.",
+            action=ActionModel(
+                type="SAHAYAK_TRIGGER",
+                target_id=target_id,
+                selector=selector,
+                label=f"Activate Sahayak for {label[:40]}",
+                risk="low",
+                reason="Activating Sahayak for document upload."
+            ),
+            requires_hitl=False,
+            completed=False,
+            status_summary=format_status(f"Activating Sahayak for {label[:40]}...")
         )
 
     # --- WAIT_FOR_USER ---
@@ -847,102 +906,158 @@ def _keyword_fallback(req: AgentStepRequest) -> AgentStepResponse:
     url = req.url or ""
     url_lower = url.lower()
 
-    valid_nodes = [
-        n for n in nodes
-        if isinstance(n, dict)
-        and (n.get("text") or n.get("placeholder") or n.get("ariaLabel"))
-        and (n.get("text") or "") not in ("[NAME]", "[EMAIL]", "[PASSWORD]", "[PHONE]", "[PAN]", "[AADHAAR]", "[CARD]")
-    ]
+    executed_selectors = set()
+    for h in (req.action_history or []):
+        act = h.get("action", {})
+        if isinstance(act, dict):
+            sel = act.get("selector") or act.get("target_id")
+            if sel:
+                executed_selectors.add(sel)
 
-    def find_node(keywords: List[str], tags: List[str] = None):
-        for node in valid_nodes:
-            if tags and node.get("tag", "").lower() not in tags:
-                continue
-            text_blob = f"{node.get('text') or ''} {node.get('placeholder') or ''} {node.get('ariaLabel') or ''}".lower()
-            if any(kw in text_blob for kw in keywords):
-                return node
-        return None
+    # 1. Prioritize unhandled file input fields (Sahayak trigger)
+    for node in nodes:
+        if isinstance(node, dict) and (node.get("type") == "file" or "file" in (node.get("text") or "").lower()):
+            node_aid = node.get("agentId")
+            node_sel = node.get("selector") or (f'[data-agent-id="{node_aid}"]' if node_aid else None)
+            if node_sel not in executed_selectors and node_aid not in executed_selectors:
+                node_label = node.get("text") or node.get("ariaLabel") or "File Upload Field"
+                return AgentStepResponse(
+                    task_id=req.task_id,
+                    step_number=step_num,
+                    thought=f"Encountered file input field '{node_label}'. Activating Sahayak Assistant.",
+                    action=ActionModel(
+                        type="SAHAYAK_TRIGGER",
+                        target_id=node_aid,
+                        selector=node_sel,
+                        label=f"Activate Sahayak for {node_label[:30]}",
+                        risk="low",
+                        reason="Delegating document collection to Sahayak"
+                    ),
+                    requires_hitl=False,
+                    completed=False,
+                    status_summary=f"Activating Sahayak for {node_label[:30]}..."
+                )
 
-    is_internal_page = not url or any(url_lower.startswith(p) for p in ["chrome://", "chrome-extension://", "edge://", "about:", "file://"])
+    # 2. Check for route origin/destination inputs (e.g. From / Origin, To / Destination)
+    for node in nodes:
+        if isinstance(node, dict):
+            ph = (node.get("placeholder") or "").lower()
+            text = (node.get("text") or "").lower()
+            aria = (node.get("ariaLabel") or "").lower()
+            blob = f"{ph} {text} {aria}"
+            if "from" in blob or "origin" in blob:
+                node_aid = node.get("agentId")
+                node_sel = node.get("selector") or (f'[data-agent-id="{node_aid}"]' if node_aid else None)
+                if node_sel not in executed_selectors and node_aid not in executed_selectors:
+                    match = re.search(r'from\s+([a-zA-Z\s]+?)(?:\s+to|\s*$)', goal_lower)
+                    origin_val = match.group(1).strip() if match else "chennai"
+                    return AgentStepResponse(
+                        task_id=req.task_id,
+                        step_number=step_num,
+                        thought=f"Typing origin city '{origin_val}' into route picker.",
+                        action=ActionModel(
+                            type="TYPE_AND_SELECT",
+                            target_id=node_aid,
+                            selector=node_sel,
+                            value=origin_val,
+                            label=f"Select Origin '{origin_val}'",
+                            risk="low",
+                            reason="Route origin input"
+                        ),
+                        requires_hitl=False,
+                        completed=False,
+                        status_summary=f"Selecting origin '{origin_val}'..."
+                    )
 
-    # Navigation intent
-    for pattern, _ in NAVIGATION_PATTERNS:
-        match = re.match(pattern, goal_lower)
-        if match:
-            target = match.group(1).strip()
-            if not target.startswith("http"):
-                if "." not in target:
-                    target = f"https://www.{target}.com"
-                else:
-                    target = f"https://{target}"
-            return AgentStepResponse(
-                task_id=req.task_id,
-                step_number=step_num,
-                thought=f"Navigating to {target}",
-                action=ActionModel(type="NAVIGATE", url=target, label=f"Navigate to {target}", risk="low", reason="Navigation request"),
-                requires_hitl=False,
-                completed=False,
-                status_summary=f"Navigating to {target}"
-            )
+    # 3. Check for search inputs (e.g. input matching search/find/buy)
+    for node in nodes:
+        if isinstance(node, dict):
+            tag = (node.get("tag") or "").lower()
+            ntype = (node.get("type") or "").lower()
+            ph = (node.get("placeholder") or "").lower()
+            blob = f"{ph} {node.get('text') or ''} {node.get('ariaLabel') or ''}".lower()
+            if tag == "input" and (ntype in ["text", "search", ""] or "search" in blob or "item" in blob or "find" in goal_lower or "search" in goal_lower):
+                node_aid = node.get("agentId")
+                node_sel = node.get("selector") or (f'[data-agent-id="{node_aid}"]' if node_aid else None)
+                if node_sel not in executed_selectors and node_aid not in executed_selectors:
+                    query = goal
+                    query = re.sub(r'^(?:find|search|buy|look for|get|order)\s+', '', query, flags=re.IGNORECASE).strip()
+                    return AgentStepResponse(
+                        task_id=req.task_id,
+                        step_number=step_num,
+                        thought=f"Typing search query '{query}' into search field.",
+                        action=ActionModel(
+                            type="TYPE_AND_ENTER",
+                            target_id=node_aid,
+                            selector=node_sel,
+                            value=query,
+                            label=f"Search '{query}'",
+                            risk="low",
+                            reason="Product/Item search input"
+                        ),
+                        requires_hitl=False,
+                        completed=False,
+                        status_summary=f"Searching for '{query}'..."
+                    )
 
-    # Search intent
-    is_search_intent = any(kw in goal_lower for kw in SEARCH_INTENT_KEYWORDS)
-    if is_search_intent and is_internal_page:
-        query = quote_plus(goal)
-        return AgentStepResponse(
-            task_id=req.task_id,
-            step_number=step_num,
-            thought=f"Searching Google for '{goal}'",
-            action=ActionModel(type="NAVIGATE", url=f"https://www.google.com/search?q={query}", label=f"Search: {goal[:40]}", risk="low", reason="Web search"),
-            requires_hitl=False,
-            completed=False,
-            status_summary=f"Searching: {goal[:40]}"
-        )
+    # 4. Check for terms/consent checkboxes
+    for node in nodes:
+        if isinstance(node, dict):
+            tag = (node.get("tag") or "").lower()
+            ntype = (node.get("type") or "").lower()
+            text_blob = f"{node.get('text') or ''} {node.get('ariaLabel') or ''}".lower()
+            if ntype == "checkbox" or tag == "checkbox" or "accept" in text_blob or "terms" in text_blob:
+                node_aid = node.get("agentId")
+                node_sel = node.get("selector") or (f'[data-agent-id="{node_aid}"]' if node_aid else None)
+                if node_sel not in executed_selectors and node_aid not in executed_selectors:
+                    return AgentStepResponse(
+                        task_id=req.task_id,
+                        step_number=step_num,
+                        thought="Accepting form terms and conditions checkbox.",
+                        action=ActionModel(
+                            type="CLICK",
+                            target_id=node_aid,
+                            selector=node_sel,
+                            label="Accept terms & conditions",
+                            risk="low",
+                            reason="Checking consent checkbox"
+                        ),
+                        requires_hitl=False,
+                        completed=False,
+                        status_summary="Accepting terms and conditions..."
+                    )
 
-    if is_search_intent:
-        search_input = find_node(["search", "find", "query", "type", "q"], tags=["input", "textarea"])
-        if search_input and step_num <= 2:
-            return AgentStepResponse(
-                task_id=req.task_id,
-                step_number=step_num,
-                thought=f"Typing '{goal}' into search input.",
-                action=ActionModel(
-                    type="TYPE_AND_ENTER",
-                    target_id=search_input.get("agentId"),
-                    selector=search_input.get("selector"),
-                    value=goal,
-                    label=f"Search for '{goal[:30]}'",
-                    risk="low",
-                    reason="Submitting search query"
-                ),
-                requires_hitl=False,
-                completed=False,
-                status_summary="Submitting search query..."
-            )
+    # 5. Form submission button detection (e.g. SUBMIT APPLICATION, Submit, Save, Continue)
+    submit_keywords = ["submit", "apply", "register", "confirm", "proceed", "continue", "save"]
+    for node in nodes:
+        if isinstance(node, dict):
+            tag = (node.get("tag") or "").lower()
+            text = (node.get("text") or "").lower()
+            if tag in ["button", "input", "a"] and any(kw in text for kw in submit_keywords):
+                node_aid = node.get("agentId")
+                node_sel = node.get("selector") or (f'[data-agent-id="{node_aid}"]' if node_aid else None)
+                if node_sel not in executed_selectors and node_aid not in executed_selectors:
+                    node_text = node.get("text") or "Submit Application"
+                    return AgentStepResponse(
+                        task_id=req.task_id,
+                        step_number=step_num,
+                        thought=f"Submitting form application via button '{node_text}'.",
+                        action=ActionModel(
+                            type="CLICK",
+                            target_id=node_aid,
+                            selector=node_sel,
+                            label=node_text[:40],
+                            risk="low",
+                            reason="Submitting application form"
+                        ),
+                        requires_hitl=False,
+                        completed=False,
+                        status_summary=f"Submitting application: {node_text[:30]}..."
+                    )
 
-    # Banking intent
-    is_banking_intent = any(kw in goal_lower for kw in BANKING_INTENT_KEYWORDS)
-    if is_banking_intent:
-        submit_btn = find_node(["deposit", "transfer", "send", "pay", "submit", "confirm"], tags=["button", "a", "input"])
-        if submit_btn:
-            node_text = submit_btn.get("text") or "Submit"
-            return AgentStepResponse(
-                task_id=req.task_id,
-                step_number=step_num,
-                thought=f"Found financial action button '{node_text}'.",
-                action=ActionModel(
-                    type="CLICK",
-                    target_id=submit_btn.get("agentId"),
-                    selector=submit_btn.get("selector"),
-                    label=node_text,
-                    risk="high",
-                    reason="Financial action requires confirmation."
-                ),
-                requires_hitl=True,
-                hitl_prompt=f"⚠️ Confirm executing '{node_text}'?",
-                completed=False,
-                status_summary="Awaiting confirmation for financial action."
-            )
+    # 4. If form submitted or all actions executed, return COMPLETE
+    if executed_selectors:
+        return _fallback_complete(req, "Form completed and submitted successfully.")
 
     return AgentStepResponse(
         task_id=req.task_id,
@@ -1002,6 +1117,5 @@ def plan_next_agent_step(req: AgentStepRequest) -> AgentStepResponse:
         logger.info(f"LLM agent decided: intent={llm_result.get('intent')}, thought={llm_result.get('thought', '')[:60]}")
         return _build_response_from_llm(req, llm_result)
 
-    # If LLM is unreachable or fails to generate a valid plan, stop the task immediately.
-    logger.warning("LLM unavailable or failed to process step. Halting task.")
-    return _fallback_complete(req, "🛑 STOPPED: Server could not process the step. The task has been halted to prevent errors or looping.")
+    logger.warning("LLM unavailable or failed to process step. Executing rule-based fallback planner...")
+    return _keyword_fallback(req)

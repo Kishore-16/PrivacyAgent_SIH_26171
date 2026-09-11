@@ -104,6 +104,34 @@
   border: 1px solid var(--sahayak-border);
 }
 
+.sahayak-state-section {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(15, 23, 42, 0.6);
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--sahayak-border);
+}
+
+.sahayak-state-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--sahayak-subtext);
+  white-space: nowrap;
+}
+
+.sahayak-state-select {
+  flex: 1;
+  background: #1e293b;
+  border: 1px solid #475569;
+  color: #f8fafc;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
 .sahayak-lang-label {
   font-size: 0.8rem;
   font-weight: 600;

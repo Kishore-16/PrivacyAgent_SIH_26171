@@ -170,17 +170,21 @@ def call_gemini_api(prompt: str, api_key: str, system_prompt: Optional[str] = No
     """Executes HTTP POST to Google Generative Language API (Gemini)."""
     import urllib.request
 
+    if not api_key or not api_key.startswith("AIza"):
+        return None
+
     models_to_try = [
-        "gemini-flash-latest",
-        "gemini-2.5-flash",
         "gemini-2.0-flash",
-        "gemini-1.5-flash"
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-2.0-flash-lite"
     ]
 
     for m in models_to_try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_key}"
         headers = {
             "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "X-goog-api-key": api_key
         }
         payload: Dict[str, Any] = {
@@ -236,14 +240,9 @@ def call_openrouter_api(prompt: str, api_key: str, model_name: str = "openrouter
     }
 
     models_to_try = [
-        "google/gemma-4-31b-it:free",
-        "z-ai/glm-5.2:free",
-        "nvidia/nemotron-3.5-lightning:free",
-        "liquid/lfm-2.5-2.6b:free",
-        "google/gemma-4-26b-a4b-it:free",
-        "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "thinkingmachines/inkling-small:free",
-        "minimax/minimax-m3:free",
+        "openrouter/auto",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        "meta-llama/llama-3.3-70b-instruct:free"
     ]
 
     for m in models_to_try:
@@ -309,14 +308,9 @@ def call_agent_chat(system_prompt: str, user_prompt: str, api_key: Optional[str]
     }
 
     models_to_try = [
-        "google/gemma-4-31b-it:free",
-        "z-ai/glm-5.2:free",
-        "nvidia/nemotron-3.5-lightning:free",
-        "liquid/lfm-2.5-2.6b:free",
-        "google/gemma-4-26b-a4b-it:free",
-        "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "thinkingmachines/inkling-small:free",
-        "minimax/minimax-m3:free",
+        "openrouter/auto",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        "meta-llama/llama-3.3-70b-instruct:free"
     ]
 
     for m in models_to_try:
@@ -411,22 +405,23 @@ Return EXACTLY a JSON object with this key structure:
         if openrouter_key:
             raw_llm_out = call_openrouter_api(prompt, openrouter_key)
 
-        if raw_llm_out:
-            try:
-                clean_json_str = re.sub(r'^```json\s*', '', raw_llm_out, flags=re.MULTILINE)
-                clean_json_str = re.sub(r'^```\s*', '', clean_json_str, flags=re.MULTILINE).strip()
-                parsed_data = json.loads(clean_json_str)
+    if raw_llm_out:
+        try:
+            clean_json_str = re.sub(r'^```json\s*', '', raw_llm_out, flags=re.MULTILINE)
+            clean_json_str = re.sub(r'^```\s*', '', clean_json_str, flags=re.MULTILINE).strip()
+            clean_json_str = re.sub(r'```$', '', clean_json_str).strip()
+            parsed_data = json.loads(clean_json_str)
 
-                if "title" in parsed_data and "online_steps" in parsed_data:
-                    # Enforce live HTTPS verified URL
-                    parsed_data["portal_name"] = verified_portal_name
-                    parsed_data["portal_url"] = verified_portal_url
-                    GUIDE_CACHE[cache_key] = parsed_data
-                    return parsed_data
-            except Exception as parse_err:
-                logger.warning(f"Error parsing LLM JSON output: {parse_err}. Raw: {raw_llm_out[:150]}")
+            if "title" in parsed_data and ("online_steps" in parsed_data or "steps" in parsed_data):
+                # Enforce live HTTPS verified URL
+                parsed_data["portal_name"] = verified_portal_name
+                parsed_data["portal_url"] = verified_portal_url
+                GUIDE_CACHE[cache_key] = parsed_data
+                return parsed_data
+        except Exception as parse_err:
+            logger.warning(f"Error parsing LLM JSON output: {parse_err}. Raw: {raw_llm_out[:150]}")
 
-    # Fallback if API offline
+    # Dynamic Fallback if API offline or key not provided
     q = clean_doc.lower()
     if "income" in q or "आय" in q:
         fallback = FALLBACK_DATABASE["income_certificate"].copy()
@@ -434,7 +429,11 @@ Return EXACTLY a JSON object with this key structure:
         fallback = FALLBACK_DATABASE["aadhaar_card"].copy()
     else:
         fallback = FALLBACK_DATABASE["generic"].copy()
+        doc_display_name = clean_doc.replace('_', ' ').title()
+        fallback["title"] = f"{doc_display_name} Required"
+        fallback["description"] = f"Official {doc_display_name} requested for identification or form submission in {state_context}."
 
     fallback["portal_name"] = verified_portal_name
     fallback["portal_url"] = verified_portal_url
     return fallback
+

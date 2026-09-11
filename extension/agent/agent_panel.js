@@ -54,6 +54,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let shkSelectedFileObj = null;
   let shkTargetSelector = null;
   let shkIsProcessing = false;
+  let isSahayakActive = false;
 
   // -----------------------------------------------------------------------
   // UI Helpers
@@ -575,6 +576,23 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
 
+  // Chrome runtime listener for Sahayak file submission events
+  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+      if (msg.type === 'SAHAYAK_FILE_ATTACHED') {
+        appendMessage('system', `✅ Sahayak attached document '${msg.fileName}' to form.`);
+        closeSahayakCard();
+        if (currentTaskId) {
+          isSahayakActive = false;
+          stepCounter++;
+          setStatus('Running...', true);
+          appendMessage('system', '▶️ Resuming autonomous agent form-filling automation...');
+          setTimeout(runNextStep, 1200);
+        }
+      }
+    });
+  }
+
   // -----------------------------------------------------------------------
   // MAIN AGENT LOOP — Observe-Plan-Act with verification
   // -----------------------------------------------------------------------
@@ -612,6 +630,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function runNextStep() {
     if (!currentTaskId) return;
+    if (isSahayakActive) {
+      console.log('[Agent Panel] Paused while Sahayak is active.');
+      return;
+    }
 
     setStatus(`Executing Step ${stepCounter}...`, true);
     const activeTab = await getActiveTab();
@@ -629,10 +651,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // Check if DOM contains empty file input requiring Sahayak
     const missingFileInput = (domData.nodes || []).find(n => n.tag === 'input' && n.type === 'file');
     if (missingFileInput) {
+      isSahayakActive = true;
       const docName = missingFileInput.text || missingFileInput.placeholder || 'Income Certificate';
       appendMessage('system', `📄 Sahayak Assistant triggered for '${docName}'.`);
       openSahayakCard(docName, missingFileInput.selector);
-      setStatus('Awaiting Document Upload', true);
+      setStatus('Paused (Awaiting Sahayak Document...)', false);
       return;
     }
 
@@ -758,6 +781,25 @@ document.addEventListener('DOMContentLoaded', () => {
       // Wait for navigation to complete
       await smartWait(tabId, preActionUrl);
       setTimeout(runNextStep, 1000);
+      return;
+    }
+
+    // --- SAHAYAK_TRIGGER / UPLOAD_DOCUMENT ---
+    if (stepResult.action?.type === 'SAHAYAK_TRIGGER' || stepResult.action?.type === 'UPLOAD_DOCUMENT') {
+      appendMessage('system', '📄 Required document field detected. Activating Sahayak Assistant...');
+      
+      const docType = stepResult.action.label || 'generic';
+      const selector = stepResult.action.selector;
+      
+      isSahayakActive = true;
+
+      // Open Sahayak in sidepanel
+      openSahayakCard(docType, selector);
+      
+      addToHistory(stepCounter, 'SAHAYAK_TRIGGER', 'success', stepResult.thought, preActionUrl);
+      lastActionResult = 'success';
+      setStatus('Paused (Awaiting Sahayak Document...)', false);
+      appendMessage('system', '⏸️ Agent paused. Please attach your document via Sahayak to resume automation.');
       return;
     }
 
